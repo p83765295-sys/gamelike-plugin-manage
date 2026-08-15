@@ -9,7 +9,10 @@
   原生插件只允许禁用/启用（不可卸载），用户插件允许禁用/启用/卸载。
   所有操作**只写 profile 配置**，当前进程不动，**重启 DSH 后生效**；
   原生插件的禁用写进 `cordis.patch.yml`，因此重启后**不恢复**。
-- **下载插件（M2，空壳）**：暂未开放。
+- **插件安装（M2，已实现）**：三种方式任选，统一落点 profile bundles + 立即装配（重启仍在）：
+  1. 本地目录路径（Windows / WSL 路径均可，未构建会自动构建）；
+  2. 拖拽 `.tgz` / `.tar.gz` 到页面区域，松手即自动上传安装；
+  3. GitHub 地址 / npm 包名或安装指令共用一个输入框，自动识别（clone 或 npm pack）。
 - **开发插件（M3，空壳）**：暂未开放。
 - **插件包（M4，空壳）**：暂未开放。
 
@@ -42,7 +45,11 @@ M1 界面支持：按 id / 包名搜索；两组折叠（**原生** / **用户**
 | GET | `/plugin-manage/api/list` | — | 全部插件 + 来源 + 运行/期望状态 + 待重启列表 |
 | POST | `/plugin-manage/api/disable` | `{ id }` | 持久禁用（重启生效） |
 | POST | `/plugin-manage/api/enable` | `{ id }` | 持久启用（重启生效） |
-| POST | `/plugin-manage/api/uninstall` | `{ id }` | 持久卸载用户插件（重启生效；官方/注入型拒绝） |
+| POST | `/plugin-manage/api/uninstall` | `{ id }` | 持久卸载用户插件（重启生效；原生/注入型拒绝） |
+| POST | `/plugin-manage/api/cancel-uninstall` | `{ id }` | 取消待重启卸载 |
+| POST | `/plugin-manage/api/install-local` | `{ path }` | 本地目录安装（立即装配 + 持久化） |
+| POST | `/plugin-manage/api/install-tgz` | 二进制 body + `x-file-name` 头 | 上传 tgz 安装 |
+| POST | `/plugin-manage/api/install-source` | `{ source }` | GitHub 地址或 npm 包名/指令安装 |
 
 ## 来源判定
 

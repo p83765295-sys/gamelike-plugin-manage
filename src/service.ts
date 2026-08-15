@@ -5,6 +5,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
+import { installLocal, installSource, installTgz, type InstallResult } from './installer.js'
 import {
   messageOf,
   pendingOf,
@@ -30,6 +31,12 @@ export interface PluginManageService {
   cancelUninstall(id: string): Promise<ActionOk>
   /** 重启后应用 pending：把待重启操作真正写入 profile 配置 */
   applyPending(): Promise<void>
+  /** M2 插件安装：本地目录路径（支持 Windows / WSL 路径） */
+  installLocal(path: string): Promise<InstallResult>
+  /** M2 插件安装：上传的 .tgz 内容 */
+  installTgz(fileName: string, buffer: Buffer): Promise<InstallResult>
+  /** M2 插件安装：GitHub 地址或 npm 包名/安装指令 */
+  installSource(source: string): Promise<InstallResult>
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -54,7 +61,7 @@ function classify(id: string, name: string, bundles: ProfileBundle[], patchIds: 
   // 其展开行（include:web-runtime 等）不能因为「bundles 列表里有它」被判成用户插件。
   if (name.startsWith('@deepseek-ai/') || name.startsWith('node:') || name.startsWith('cordis:')) return 'native'
   if (patchIds.has(patchId) || patchIds.has(id)) return 'user'
-  if (bundles.some((bundle) => bundle.name === name)) return 'user'
+  if (bundles.some((bundle) => bundle.name === name || bundle.name === id || bundle.name === patchId)) return 'user'
   // 裸包名 / 绝对路径 / @dsh-external 等，未登记在持久层 → 临时注入
   return 'injected'
 }
@@ -193,6 +200,12 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
         message: `已取消卸载「${id}」：配置从未改动，重启后仍在。待重启项共 ${pending.length} 条。`,
       }
     },
+
+    installLocal: (path: string) => installLocal(ctx, paths, path),
+
+    installTgz: (fileName: string, buffer: Buffer) => installTgz(ctx, paths, fileName, buffer),
+
+    installSource: (source: string) => installSource(ctx, paths, source),
 
     async applyPending(): Promise<void> {
       const pending = readPending(paths.pendingPath)

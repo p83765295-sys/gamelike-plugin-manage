@@ -6,7 +6,7 @@
  * 操作先只写 pending 记录，当前进程完全不动；重启后本插件 apply 时
  * 再把 pending 真正写入 cordis.patch.yml / package.json（原生禁用重启后不恢复）。
  * 因此卸载在重启前可随时取消（pending 一删，配置从未被动过）。
- * M2 下载插件 / M3 开发插件 / M4 插件包：本版为空壳占位。
+ * M2 插件安装 / M3 开发插件 / M4 插件包：本版为空壳占位。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'

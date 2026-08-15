@@ -4,20 +4,24 @@ import type { PluginManageService } from './service.js'
 
 export const API_PREFIX = '/plugin-manage/api'
 
-const MAX_BODY_BYTES = 64 * 1024
+const MAX_BODY_BYTES = 128 * 1024 * 1024
 
 type Logger = { info?(msg: string): void; warn?(msg: string): void }
 
-async function readBody(req: IncomingMessage): Promise<string> {
+async function readBodyBuffer(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = []
   let total = 0
   for await (const chunk of req) {
     const buf = Buffer.from(chunk)
     total += buf.length
-    if (total > MAX_BODY_BYTES) throw new Error('request body too large')
+    if (total > MAX_BODY_BYTES) throw new Error('request body too large (max 128 MiB)')
     chunks.push(buf)
   }
-  return Buffer.concat(chunks).toString('utf8')
+  return Buffer.concat(chunks)
+}
+
+async function readBody(req: IncomingMessage): Promise<string> {
+  return (await readBodyBuffer(req)).toString('utf8')
 }
 
 function send(res: ServerResponse, code: number, body: unknown): void {
@@ -76,6 +80,28 @@ export function registerGateway(ctx: Context, svc: PluginManageService, log?: Lo
           }
           if (req.method === 'POST' && path === '/cancel-uninstall') {
             return send(res, 200, { ok: true, result: await svc.cancelUninstall(await parseId(req)) })
+          }
+          if (req.method === 'POST' && path === '/install-local') {
+            const text = (await readBody(req)).trim()
+            if (!text) return send(res, 400, { ok: false, error: '缺少路径' })
+            const body = JSON.parse(text) as { path?: unknown }
+            const dir = String(body?.path ?? '').trim()
+            if (!dir) return send(res, 400, { ok: false, error: 'path 必填' })
+            return send(res, 200, { ok: true, result: await svc.installLocal(dir) })
+          }
+          if (req.method === 'POST' && path === '/install-tgz') {
+            const fileName = String(req.headers['x-file-name'] ?? 'plugin.tgz').trim()
+            const buffer = await readBodyBuffer(req)
+            if (!buffer.length) return send(res, 400, { ok: false, error: '缺少文件内容' })
+            return send(res, 200, { ok: true, result: await svc.installTgz(fileName, buffer) })
+          }
+          if (req.method === 'POST' && path === '/install-source') {
+            const text = (await readBody(req)).trim()
+            if (!text) return send(res, 400, { ok: false, error: '缺少地址或指令' })
+            const body = JSON.parse(text) as { source?: unknown }
+            const source = String(body?.source ?? '').trim()
+            if (!source) return send(res, 400, { ok: false, error: 'source 必填' })
+            return send(res, 200, { ok: true, result: await svc.installSource(source) })
           }
           return send(res, 404, { ok: false, error: 'not found: ' + path })
         } catch (error) {

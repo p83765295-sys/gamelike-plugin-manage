@@ -63,6 +63,16 @@ window.__ModuleLoader__.load({
 .pm-hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;margin:0}
 .pm-placeholder{border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;padding:36px 20px;text-align:center;color:var(--dsw-alias-label-tertiary)}
 .pm-placeholder b{display:block;color:var(--dsw-alias-label-secondary);font-size:15px;margin-bottom:6px}
+.pm-card{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.pm-card-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}
+.pm-card-desc{font-size:12px;color:var(--dsw-alias-label-tertiary);margin:0;line-height:1.5}
+.pm-input{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);min-height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;font-size:13px;line-height:1.5}
+.pm-input:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}
+.pm-inline{display:flex;gap:8px;align-items:center}
+.pm-inline .pm-input{flex:1}
+.pm-drop{border:1.5px dashed var(--dsw-alias-border-l2);border-radius:12px;padding:22px 12px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;transition:border-color .15s,color .15s,background .15s;cursor:pointer}
+.pm-drop.on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-3)}
+.pm-drop b{display:block;font-size:14px;margin-bottom:4px;font-weight:600}
 `
 
     function fetchJson(path, init) {
@@ -100,7 +110,7 @@ window.__ModuleLoader__.load({
 
     const TABS = [
       { key: 'manage', label: '管理插件' },
-      { key: 'download', label: '下载插件' },
+      { key: 'download', label: '插件安装' },
       { key: 'develop', label: '开发插件' },
       { key: 'packages', label: '插件包' },
     ]
@@ -185,6 +195,161 @@ window.__ModuleLoader__.load({
         ],
       })
     }
+
+
+    function InstallTab({ onRefresh }) {
+      const [dir, setDir] = useState('')
+      const [source, setSource] = useState('')
+      const [dragging, setDragging] = useState(false)
+      const [busy, setBusy] = useState(null)
+      const [msg, setMsg] = useState(null)
+
+      const finish = (r, okText) => {
+        if (!r || r.ok === false) {
+          setMsg({ text: (r && r.error) || '安装失败', isErr: true })
+          return false
+        }
+        setMsg({ text: (r.result && r.result.message) || okText, isErr: false })
+        if (onRefresh) onRefresh()
+        return true
+      }
+
+      const installLocal = () => {
+        if (!dir.trim()) {
+          setMsg({ text: '请填写插件目录路径', isErr: true })
+          return
+        }
+        setBusy('local')
+        setMsg(null)
+        fetchJson('/install-local', { method: 'POST', body: JSON.stringify({ path: dir.trim() }) })
+          .then((r) => finish(r, '安装成功'))
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const installSource = () => {
+        if (!source.trim()) {
+          setMsg({ text: '请填写 GitHub 地址或 npm 包名/安装指令', isErr: true })
+          return
+        }
+        setBusy('source')
+        setMsg(null)
+        fetchJson('/install-source', { method: 'POST', body: JSON.stringify({ source: source.trim() }) })
+          .then((r) => finish(r, '安装成功'))
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const uploadFile = (file) => {
+        if (!file) return
+        if (!/\.(tgz|tar\.gz)$/i.test(file.name)) {
+          setMsg({ text: '仅支持 .tgz / .tar.gz 压缩包', isErr: true })
+          return
+        }
+        setBusy('drop')
+        setMsg({ text: '正在上传并安装 ' + file.name + ' …', isErr: false })
+        fetch(API + '/install-tgz', {
+          method: 'POST',
+          headers: { 'x-file-name': encodeURIComponent(file.name) },
+          body: file,
+        })
+          .then((r) => r.json())
+          .then((r) => finish(r, '安装成功'))
+          .catch((err) => setMsg({ text: '上传失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      return jsxs('div', {
+        children: [
+          jsx('p', {
+            className: 'pm-intro',
+            children: '三种安装方式，任选其一：本地目录 / 拖入 .tgz 压缩包 / GitHub 地址或 npm 指令。安装后立即生效，并写入 profile 持久化（重启仍在）。',
+          }),
+          jsxs('div', {
+            className: 'pm-card',
+            children: [
+              jsx('h3', { className: 'pm-card-title', children: '① 本地目录' }),
+              jsx('p', { className: 'pm-card-desc', children: '填写插件项目目录（含 package.json 与 lib/，支持 Windows 或 WSL 路径），未构建会自动尝试构建。' }),
+              jsx('div', {
+                className: 'pm-inline',
+                children: [
+                  jsx('input', {
+                    className: 'pm-input',
+                    placeholder: '例如 C:\\Users\\Administrator\\my-plugin 或 /mnt/c/...',
+                    value: dir,
+                    onChange: (e) => setDir(e.target.value),
+                  }),
+                  jsx('button', {
+                    className: 'pm-btn',
+                    disabled: busy !== null,
+                    onClick: installLocal,
+                    children: busy === 'local' ? '安装中…' : '安装',
+                  }),
+                ],
+              }),
+            ],
+          }),
+          jsxs('div', {
+            className: 'pm-card',
+            children: [
+              jsx('h3', { className: 'pm-card-title', children: '② 拖拽压缩包' }),
+              jsx('p', { className: 'pm-card-desc', children: '把 .tgz / .tar.gz 插件包拖进下面区域，松手即自动上传安装。' }),
+              jsx('div', {
+                className: 'pm-drop' + (dragging ? ' on' : ''),
+                onDragOver: (e) => {
+                  e.preventDefault()
+                  setDragging(true)
+                },
+                onDragLeave: () => setDragging(false),
+                onDrop: (e) => {
+                  e.preventDefault()
+                  setDragging(false)
+                  uploadFile(e.dataTransfer.files && e.dataTransfer.files[0])
+                },
+                children: [
+                  jsx('b', { children: dragging ? '松开立即安装' : '拖拽 .tgz 到这里' }),
+                  jsx('span', { children: busy === 'drop' ? '正在安装，请稍候…' : '松手即自动安装，无需点击按钮' }),
+                ],
+              }),
+            ],
+          }),
+          jsxs('div', {
+            className: 'pm-card',
+            children: [
+              jsx('h3', { className: 'pm-card-title', children: '③ GitHub 地址 / npm 指令' }),
+              jsx('p', { className: 'pm-card-desc', children: 'GitHub 仓库会自动 clone + 构建；npm 会执行 npm pack 后安装。二者共用一个输入框，自动识别。' }),
+              jsx('div', {
+                className: 'pm-inline',
+                children: [
+                  jsx('input', {
+                    className: 'pm-input',
+                    placeholder: 'https://github.com/user/repo 或 npm install some-package',
+                    value: source,
+                    onChange: (e) => setSource(e.target.value),
+                    onKeyDown: (e) => {
+                      if (e.key === 'Enter') installSource()
+                    },
+                  }),
+                  jsx('button', {
+                    className: 'pm-btn',
+                    disabled: busy !== null,
+                    onClick: installSource,
+                    children: busy === 'source' ? '安装中…' : '安装',
+                  }),
+                ],
+              }),
+            ],
+          }),
+          msg
+            ? jsx('div', {
+                className: 'pm-msg' + (msg.isErr ? ' err' : ''),
+                children: msg.text,
+              })
+            : null,
+        ],
+      })
+    }
+
 
     function ManageTab({ data, busy, onAction }) {
       const [search, setSearch] = useState('')
@@ -318,7 +483,7 @@ window.__ModuleLoader__.load({
             ),
           }),
           tab === 'manage' ? jsx(ManageTab, { data, busy, onAction }) : null,
-          tab === 'download' ? jsx(Placeholder, { title: '下载插件', desc: '从 GitHub Release / npm / 本地包安装插件 —— 暂未开放。' }) : null,
+          tab === 'download' ? jsx(InstallTab, { onRefresh: refresh }) : null,
           tab === 'develop' ? jsx(Placeholder, { title: '开发插件', desc: '生成插件骨架、构建、注入调试 —— 暂未开放。' }) : null,
           tab === 'packages' ? jsx(Placeholder, { title: '插件包', desc: '本地插件包（.tgz）管理 —— 暂未开放。' }) : null,
           msg
