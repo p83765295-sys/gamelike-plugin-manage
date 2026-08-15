@@ -6,7 +6,7 @@
  * - M1 显示分组徽标、按分组过滤、整组启用/禁用。
  * 一个插件（按包名 name 标识）同一时刻只能属于一个分组。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { parseDocument, isMap, isSeq, type Document, type YAMLMap, type YAMLSeq } from 'yaml'
 
@@ -27,7 +27,13 @@ function atomicWrite(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true })
   const tmp = path + '.tmp'
   writeFileSync(tmp, text, 'utf8')
-  renameSync(tmp, path)
+  try {
+    renameSync(tmp, path)
+  } catch {
+    // Windows 上目标文件已存在时 rename 可能失败（EPERM），先移除再重命名
+    rmSync(path, { force: true })
+    renameSync(tmp, path)
+  }
 }
 
 export function readGroups(path: string): PluginGroup[] {

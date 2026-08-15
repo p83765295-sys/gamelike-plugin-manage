@@ -65,9 +65,21 @@ export interface Prepared {
 const MAX_SOURCE_LEN = 500
 const MAX_TGZ_BYTES = 128 * 1024 * 1024
 
+/** Windows 下 npm/npx/node 需要可执行扩展名；bash 在原生 Windows 不可用 */
+function resolveCmd(cmd: string): string {
+  if (process.platform !== 'win32') return cmd
+  if (cmd === 'npm') return 'npm.cmd'
+  if (cmd === 'npx') return 'npx.cmd'
+  if (cmd === 'node') return 'node.exe'
+  if (cmd === 'bash') {
+    throw new Error('原生 Windows 环境没有 bash，无法执行 bash 脚本；请使用支持 npm run build 的插件，或先在本地构建好再安装')
+  }
+  return cmd
+}
+
 function run(cmd: string, args: string[], cwd: string, timeoutMs: number): string {
   try {
-    return execFileSync(cmd, args, {
+    return execFileSync(resolveCmd(cmd), args, {
       cwd,
       timeout: timeoutMs,
       encoding: 'utf8',
@@ -80,11 +92,13 @@ function run(cmd: string, args: string[], cwd: string, timeoutMs: number): strin
   }
 }
 
-/** 把 Windows 路径（C:\Users\...）转成 WSL 路径（/mnt/c/Users/...）；其它原样解析 */
+/** 解析用户填写的插件目录：win32 下直接解析 Windows 路径；WSL/Linux 下把 C:\... 转成 /mnt/c/... */
 export function toLinuxPath(input: string): string {
   const text = input.trim().replace(/^["']|["']$/g, '')
-  const win = text.match(/^([A-Za-z]):[\\/](.*)$/)
-  if (win) return `/mnt/${win[1].toLowerCase()}/${win[2].replace(/\\/g, '/')}`
+  if (process.platform !== 'win32') {
+    const win = text.match(/^([A-Za-z]):[\\/](.*)$/)
+    if (win) return `/mnt/${win[1].toLowerCase()}/${win[2].replace(/\\/g, '/')}`
+  }
   return resolve(text)
 }
 

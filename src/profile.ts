@@ -5,7 +5,7 @@
  * M1 的操作只写这两个文件 + pending 记录；不调用 ctx.loader 的运行时方法，
  * 因此当前进程不动，重启 DSH 后按新配置装配生效。
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { isMap, isSeq, parseDocument, type Document, type YAMLMap, type YAMLSeq } from 'yaml'
 import type { PendingChange } from './types.js'
@@ -21,7 +21,13 @@ function atomicWrite(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true })
   const tmp = path + '.tmp'
   writeFileSync(tmp, text, 'utf8')
-  renameSync(tmp, path)
+  try {
+    renameSync(tmp, path)
+  } catch {
+    // Windows 上目标文件已存在时 rename 可能失败（EPERM），先移除再重命名
+    rmSync(path, { force: true })
+    renameSync(tmp, path)
+  }
 }
 
 function backup(path: string): void {
