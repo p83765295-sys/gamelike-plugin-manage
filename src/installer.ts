@@ -75,6 +75,7 @@ function readPkg(dir: string): {
   main?: string
   scripts?: Record<string, string>
   devDependencies?: Record<string, string>
+  bundlePatch?: string
 } {
   const path = join(dir, 'package.json')
   if (!existsSync(path)) throw new Error(`目录中没有 package.json: ${dir}`)
@@ -83,14 +84,17 @@ function readPkg(dir: string): {
     main?: unknown
     scripts?: Record<string, string>
     devDependencies?: Record<string, string>
+    dsh?: { bundle?: { patch?: unknown } }
   }
   const name = typeof pkg.name === 'string' ? pkg.name.trim() : ''
   if (!name) throw new Error(`package.json 缺少 name: ${path}`)
+  const patch = pkg.dsh?.bundle?.patch
   return {
     name,
     main: typeof pkg.main === 'string' ? pkg.main : undefined,
     scripts: pkg.scripts,
     devDependencies: pkg.devDependencies,
+    bundlePatch: typeof patch === 'string' ? patch : undefined,
   }
 }
 
@@ -288,16 +292,19 @@ export async function prepareSource(paths: ResolvedPaths, source: string, opts: 
   if (isUrl) {
     const slug = basename(text.replace(/\.git$/, '').replace(/[#?].*$/, '')) || 'repo'
     const target = join(paths.pluginsDir, slug)
-    if (existsSync(target)) throw new Error(`目录已存在: ${target}（请先删除或换一个仓库）`)
-    mkdirSync(dirname(target), { recursive: true })
-    step(`git clone ${text} …`)
-    try {
-      run('git', ['clone', '--depth', '1', '--recurse-submodules', text, target], dirname(target), 300_000)
-    } catch (error) {
-      rmSync(target, { recursive: true, force: true })
-      throw new Error(`git clone 失败: ${messageOf(error)}`)
+    if (existsSync(target)) {
+      step(`目录已存在，复用（上次 clone / 安装失败可重试）: ${target}`, 'warn')
+    } else {
+      mkdirSync(dirname(target), { recursive: true })
+      step(`git clone ${text} …`)
+      try {
+        run('git', ['clone', '--depth', '1', '--recurse-submodules', text, target], dirname(target), 300_000)
+      } catch (error) {
+        rmSync(target, { recursive: true, force: true })
+        throw new Error(`git clone 失败: ${messageOf(error)}`)
+      }
+      step('clone 完成，识别仓库结构…')
     }
-    step('clone 完成，识别仓库结构…')
     try {
       if (existsSync(join(target, 'package.json'))) {
         prepareDir(target, opts, step)
@@ -366,9 +373,41 @@ export async function activatePrepared(
     }
     const entryFile = resolve(dir, pkg.main || 'lib/index.js')
     if (!existsSync(entryFile)) throw new Error(`找不到插件入口: ${entryFile}（package.json main 或 lib/index.js）`)
-    step(`装配 ${pkg.name} …`)
+    step(`检查插件入口: ${pkg.name}`)
+    let hasApply = false
+    try {
+      const mod = await import(entryFile)
+      const candidate = typeof mod === 'function' ? mod : (mod as { apply?: unknown; default?: { apply?: unknown } }).apply ?? (mod as { default?: { apply?: unknown } }).default?.apply
+      hasApply = typeof candidate === 'function'
+    } catch (error) {
+      // 入口无法导入时交给 loader.create 给出权威错误
+      hasApply = true
+    }
+
     addBundle(paths.packagePath, pkg.name, 'link:' + dir)
     ensureJunction(paths, pkg.name, dir)
+
+    if (!hasApply && pkg.bundlePatch) {
+      // Skill-only / 配置层 bundle：不 loader.create 自己的入口，
+      // 由 include 在装配 bundles 时应用它的 cordis.patch.yml（重启生效）。
+      step(`配置层插件（bundle-only），已写入 bundles，重启后由 include 装配其 patch`, 'warn')
+      results.push({
+        name: pkg.name,
+        entryId: '',
+        dir,
+        message: `已安装「${pkg.name}」（配置层插件）：已写入 profile bundles，重启 DSH 后由 include 装配生效。`,
+      })
+      continue
+    }
+    if (!hasApply && prepared.kind === 'suite') {
+      try { rmSync(join(paths.profileDir, 'node_modules', ...pkg.name.split('/')), { recursive: true, force: true }) } catch {}
+      try { removeBundle(paths.packagePath, pkg.name) } catch {}
+      step(`跳过非插件目录（main 未导出 apply）: ${pkg.name}`, 'warn')
+      results.push({ name: pkg.name, entryId: '', dir, message: `跳过「${pkg.name}」：不是 DSH 插件入口（main 未导出 apply）` })
+      continue
+    }
+
+    step(`装配 ${pkg.name} …`)
     let entryId: unknown
     try {
       const loader = ctx.loader as Loader
