@@ -7,15 +7,18 @@
  *                       由队列串行执行（共享 profile 文件与 loader 树）。
  */
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
-import { x as tarExtract } from 'tar'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { create as tarCreate, x as tarExtract } from 'tar'
+import { parseDocument, stringify as yamlStringify } from 'yaml'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
 import { addBundle, messageOf, readUserBundles } from './profile.js'
+import type { ExportPackResult, PackGroup, PluginGroup } from './types.js'
 
 export type StepFn = (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => void
 
@@ -34,8 +37,19 @@ export interface InstallOptions {
   onProgress?: (value: number) => void
 }
 
+/** 插件包里一个待安装插件的实际目录 */
+export interface PreparedPackPlugin {
+  name: string
+  dir: string
+}
+
+export interface PreparedPack {
+  groups: PackGroup[]
+  plugins: PreparedPackPlugin[]
+}
+
 export interface Prepared {
-  kind: 'single' | 'suite'
+  kind: 'single' | 'suite' | 'pack'
   name: string
   dir: string
   /** 待激活的插件目录（按顺序） */
@@ -44,6 +58,8 @@ export interface Prepared {
   presets: string[]
   /** 准备阶段已经给出的提示（已装/跳过等；level=error 会以红色显示） */
   notes: { text: string; level: 'info' | 'ok' | 'warn' | 'error' }[]
+  /** kind==='pack' 时：manifest 里的分组与插件目录映射 */
+  pack?: PreparedPack
 }
 
 const MAX_SOURCE_LEN = 500
@@ -233,6 +249,203 @@ export function detectSuite(root: string): { plugins: string[]; presets: string[
   return { plugins, presets }
 }
 
+/** 复制目录但排除 node_modules/.git（插件依赖由安装器按需重装） */
+function copyTreeExclude(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true })
+  let entries: string[] = []
+  try { entries = readdirSync(src) } catch { return }
+  for (const name of entries) {
+    if (name === 'node_modules' || name === '.git') continue
+    const child = join(src, name)
+    const target = join(dest, name)
+    try {
+      const st = lstatSync(child)
+      if (st.isDirectory()) copyTreeExclude(child, target)
+      else if (st.isFile()) {
+        mkdirSync(dirname(target), { recursive: true })
+        copyFileSync(child, target)
+      }
+    } catch { /* 单个文件复制失败不阻断整个导出 */ }
+  }
+}
+
+/** 计算目录内容聚合 sha256（文件相对路径 + 内容；排除 node_modules/.git） */
+function sha256OfDir(dir: string): string {
+  const root = resolve(dir)
+  const files: string[] = []
+  const walk = (d: string) => {
+    let entries: string[] = []
+    try { entries = readdirSync(d) } catch { return }
+    for (const name of entries) {
+      if (name === 'node_modules' || name === '.git') continue
+      const child = join(d, name)
+      try {
+        const st = lstatSync(child)
+        if (st.isDirectory()) walk(child)
+        else if (st.isFile()) files.push(relative(root, child))
+      } catch { /* ignore */ }
+    }
+  }
+  walk(root)
+  files.sort()
+  const hash = createHash('sha256')
+  for (const rel of files) {
+    hash.update(rel.replace(/\\/g, '/') + '\0')
+    hash.update(readFileSync(join(root, rel)))
+    hash.update('\0')
+  }
+  return hash.digest('hex')
+}
+
+function posixPath(value: string): string {
+  return value.split(sep).join('/')
+}
+
+/** 解析已安装用户插件的实际目录（link: 目录或 profile node_modules 包） */
+export function resolveInstalledDir(paths: ResolvedPaths, name: string): string | undefined {
+  const pkg = (() => {
+    try {
+      return JSON.parse(readFileSync(paths.packagePath, 'utf8')) as {
+        dependencies?: Record<string, string>
+      }
+    } catch {
+      return {}
+    }
+  })()
+  const dep = pkg.dependencies?.[name]
+  if (typeof dep === 'string' && dep.startsWith('link:')) {
+    const rel = dep.slice('link:'.length)
+    return isAbsolute(rel) ? rel : join(paths.profileDir, rel)
+  }
+  return join(paths.profileDir, 'node_modules', ...name.split('/'))
+}
+
+/** 插件包检测：顶层 package.json 声明 dsh.pack 且存在 manifest.yml */
+function isPackDir(dir: string): boolean {
+  const pkgPath = join(dir, 'package.json')
+  const manifestPath = join(dir, 'manifest.yml')
+  if (!existsSync(pkgPath) || !existsSync(manifestPath)) return false
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { dsh?: { pack?: unknown } }
+    return !!pkg.dsh?.pack
+  } catch {
+    return false
+  }
+}
+
+/** 读取插件包 manifest（只认声明式文件；返回分组清单） */
+export function readPackManifest(root: string): { groups: PackGroup[]; packageJson: Record<string, unknown> } {
+  const manifestPath = join(root, 'manifest.yml')
+  if (!existsSync(manifestPath)) throw new Error('插件包缺少 manifest.yml')
+  const doc = parseDocument(readFileSync(manifestPath, 'utf8'))
+  if (doc.errors.length) throw new Error('manifest.yml 解析失败: ' + doc.errors.map((e) => e.message).join('; '))
+  const data = doc.toJS() as {
+    groups?: Array<{
+      name?: unknown
+      desired?: unknown
+      plugins?: Array<{ name?: unknown; path?: unknown; sha256?: unknown }>
+    }>
+  }
+  if (!Array.isArray(data.groups) || data.groups.length === 0) throw new Error('插件包 manifest.yml 缺少 groups')
+  const groups: PackGroup[] = data.groups.map((g) => ({
+    name: String(g.name ?? '').trim(),
+    desired: g.desired === 'enabled' || g.desired === 'disabled' ? g.desired : 'as-is',
+    plugins: Array.isArray(g.plugins)
+      ? g.plugins.map((p) => ({
+          name: String(p.name ?? '').trim(),
+          path: String(p.path ?? '').trim(),
+          sha256: String(p.sha256 ?? '').trim(),
+        }))
+      : [],
+  }))
+  if (groups.some((g) => !g.name)) throw new Error('插件包 manifest.yml 存在空分组名')
+  return { groups, packageJson: (doc.toJS() as Record<string, unknown>) ?? {} }
+}
+
+/** 校验插件目录仍在解包根内（防 manifest path 越界） */
+function safeStagePath(root: string, relPath: string): string {
+  const rootResolved = resolve(root)
+  const target = resolve(root, relPath)
+  const rel = relative(rootResolved, target)
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`非法插件路径: ${relPath}`)
+  }
+  return target
+}
+
+/** 从已解包的插件包 stage 准备插件（复制到 pluginsDir + 依赖/构建） */
+async function preparePackFromStage(paths: ResolvedPaths, root: string, opts: InstallOptions): Promise<Prepared> {
+  const step = opts.onStep ?? (() => {})
+  const { groups } = readPackManifest(root)
+  const packPkg = readPkg(root)
+  const preparedPlugins: PreparedPackPlugin[] = []
+  const notes: Prepared['notes'] = []
+
+  for (const group of groups) {
+    for (const plugin of group.plugins) {
+      const name = plugin.name
+      if (!name) {
+        notes.push({ text: `跳过缺少 name 的插件条目`, level: 'error' })
+        continue
+      }
+      const src = safeStagePath(root, plugin.path || join('plugins', ...name.split('/')))
+      try {
+        readPkg(src)
+      } catch (error) {
+        notes.push({ text: `插件目录无效: ${name}: ${messageOf(error)}`, level: 'error' })
+        continue
+      }
+      if (isInstalled(paths, name)) {
+        notes.push({ text: `已安装，跳过准备: ${name}`, level: 'warn' })
+        const existingDir = resolveInstalledDir(paths, name) || src
+        preparedPlugins.push({ name, dir: existingDir })
+        continue
+      }
+      const dest = join(paths.pluginsDir, ...name.split('/'))
+      try {
+        rmSync(dest, { recursive: true, force: true })
+        mkdirSync(dirname(dest), { recursive: true })
+        cpSync(src, dest, { recursive: true })
+        step(`安装插件包成员: ${name}`)
+        prepareDir(dest, opts, step)
+        preparedPlugins.push({ name, dir: dest })
+      } catch (error) {
+        notes.push({ text: `插件包成员准备失败: ${name}: ${messageOf(error)}`, level: 'error' })
+      }
+    }
+  }
+
+  return {
+    kind: 'pack',
+    name: 'pack:' + packPkg.name,
+    dir: root,
+    plugins: preparedPlugins.map((p) => p.dir),
+    presets: [],
+    notes,
+    pack: { groups, plugins: preparedPlugins },
+  }
+}
+
+/** M1 更新：link 目录优先 git pull；无 git 则按 M2 流程重准备（依赖 + 构建） */
+export function prepareUpdate(paths: ResolvedPaths, pluginName: string, opts: InstallOptions = {}): Prepared {
+  const step = opts.onStep ?? (() => {})
+  opts.onProgress?.(5)
+  const dir = resolveInstalledDir(paths, pluginName)
+  if (!dir || !existsSync(join(dir, 'package.json'))) {
+    throw new Error(`无法定位插件目录: ${pluginName}（仅支持 link:/目录形式安装的用户插件）`)
+  }
+  if (existsSync(join(dir, '.git'))) {
+    step(`git pull: ${dir}`)
+    run('git', ['pull'], dir, 180_000)
+    opts.onProgress?.(80)
+    step(`已拉取最新代码: ${pluginName}`, 'ok')
+  } else {
+    step(`该目录不是 git 仓库，按 M2 流程重新准备（依赖/构建）: ${pluginName}`)
+    prepareDir(dir, opts, step)
+  }
+  return { kind: 'single', name: pluginName, dir, plugins: [dir], presets: [], notes: [] }
+}
+
 /** 复制一个声明式预设目录到 ~/.dsh/.agent-presets/<basename>；已存在则跳过（不覆盖） */
 function copyPreset(paths: ResolvedPaths, src: string): string {
   const id = basename(src)
@@ -280,6 +493,11 @@ export async function prepareTgz(
       rmSync(unpack, { recursive: true, force: true })
       mkdirSync(unpack, { recursive: true })
       await tarExtract({ file: tgzPath, cwd: unpack })
+    }
+    if (isPackDir(unpack)) {
+      opts.onProgress?.(30)
+      step('识别为 DSH 插件包（package.json + manifest.yml），准备包内插件…')
+      return await preparePackFromStage(paths, unpack, opts)
     }
     const name = readPkg(unpack).name
     const dest = join(paths.pluginsDir, name)
@@ -428,7 +646,7 @@ export async function activatePrepared(
       })
       continue
     }
-    if (!hasApply && prepared.kind === 'suite') {
+    if (!hasApply && (prepared.kind === 'suite' || prepared.kind === 'pack')) {
       try { rmSync(join(paths.profileDir, 'node_modules', ...pkg.name.split('/')), { recursive: true, force: true }) } catch {}
       try { removeBundle(paths.packagePath, pkg.name) } catch {}
       step(`跳过非插件目录（main 未导出 apply）: ${pkg.name}`, 'warn')
@@ -482,4 +700,115 @@ function removeBundle(path: string, bundleName: string): boolean {
   pkg.dsh = { ...pkg.dsh, profile: { ...pkg.dsh?.profile, bundles } }
   writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n')
   return true
+}
+
+// ═══════════════════════ M4 插件包导出 ═══════════════════════
+
+/**
+ * 把若干分组导出为 DSH 插件包（.tgz）：
+ *   package.json（合成元数据，供 M2 识别）
+ *   manifest.yml（分组 + 插件清单 + sha256）
+ *   plugins/<包名>/（插件目录本体，排除 node_modules/.git）
+ */
+export async function exportPack(
+  paths: ResolvedPaths,
+  groups: PluginGroup[],
+  packName = 'dsh-plugin-pack',
+): Promise<ExportPackResult> {
+  const step = (text: string): void => {
+    // 导出不走安装队列，这里不记录步骤；保留调用方日志
+  }
+  void step
+  const activeGroups = groups.filter((g) => g.plugins.length > 0)
+  if (activeGroups.length === 0) throw new Error('没有可导出的插件：请先创建分组并加入插件')
+
+  const seen = new Set<string>()
+  const pluginDirs = new Map<string, string>()
+  for (const group of activeGroups) {
+    for (const pluginName of group.plugins) {
+      if (seen.has(pluginName)) continue
+      const dir = resolveInstalledDir(paths, pluginName)
+      if (!dir || !existsSync(join(dir, 'package.json'))) {
+        throw new Error(`无法导出「${pluginName}」：找不到已安装插件目录（${dir || '未解析'}）`)
+      }
+      seen.add(pluginName)
+      pluginDirs.set(pluginName, dir)
+    }
+  }
+
+  const stamp = Date.now()
+  const safeName = packName.trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'dsh-plugin-pack'
+  const fileName = `${safeName}.tgz`
+  const work = join(tmpdir(), 'plugin-manage-export-' + stamp)
+  const stageRoot = join(work, safeName)
+  const pluginsStage = join(stageRoot, 'plugins')
+  mkdirSync(pluginsStage, { recursive: true })
+
+  try {
+    const manifestGroups: PackGroup[] = activeGroups.map((group) => ({
+      name: group.name,
+      desired: group.desired,
+      plugins: group.plugins.map((pluginName) => {
+        const target = join(pluginsStage, ...pluginName.split('/'))
+        copyTreeExclude(pluginDirs.get(pluginName)!, target)
+        const sha256 = sha256OfDir(target)
+        return {
+          name: pluginName,
+          path: posixPath(join('plugins', ...pluginName.split('/'))),
+          sha256,
+        }
+      }),
+    }))
+
+    const pkgJson = {
+      name: safeName,
+      version: '1.0.0',
+      private: true,
+      description: `DSH 插件包：${activeGroups.map((g) => g.name).join('、')}（由插件管理导出）`,
+      dsh: {
+        pack: {
+          format: 'dsh-plugin-pack@1',
+          manifest: 'manifest.yml',
+        },
+      },
+    }
+    const manifest = {
+      pack: {
+        name: safeName,
+        version: '1.0.0',
+        format: 'dsh-plugin-pack@1',
+        exportedAt: new Date(stamp).toISOString(),
+        profile: paths.profile,
+      },
+      groups: manifestGroups,
+    }
+
+    writeFileSync(join(stageRoot, 'package.json'), JSON.stringify(pkgJson, null, 2) + '\n')
+    writeFileSync(join(stageRoot, 'manifest.yml'), yamlStringify(manifest))
+    const tgzPath = join(work, fileName)
+    await tarCreate(
+      { gzip: true, file: tgzPath, cwd: work, portable: true },
+      [safeName],
+    )
+    return {
+      fileName,
+      filePath: tgzPath,
+      pluginCount: seen.size,
+      groups: activeGroups.map((g) => g.name),
+    }
+  } catch (error) {
+    throw new Error(`导出插件包失败: ${messageOf(error)}`)
+  } finally {
+    // 注意：tgz 在 work 根下，返回后由调用方读取；读取完成前不能清理。
+    // 这里不删除 work，由调用方在发送完成后清理。
+  }
+}
+
+/** 删除导出工作目录（调用方在下载完成后调用） */
+export function cleanupExport(filePath: string): void {
+  try {
+    rmSync(dirname(filePath), { recursive: true, force: true })
+  } catch {
+    // 忽略清理失败
+  }
 }

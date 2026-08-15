@@ -32,6 +32,14 @@ window.__ModuleLoader__.load({
 .pm-badge.user{color:#2ecc71}
 .pm-badge.inj{color:#f1c40f}
 .pm-badge.warn{color:#f1c40f}
+.pm-badge.group{color:#b78bfa}
+.pm-groups-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pm-group-chip{display:inline-flex;align-items:center;gap:6px;background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 8px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.pm-group-chip.on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.pm-group-chip button{appearance:none;border:0;background:0 0;cursor:pointer;padding:0;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.pm-group-chip button:hover{color:var(--dsw-alias-brand-primary)}
+.pm-chip-btn{border:0;background:0 0;cursor:pointer;font-size:11px;color:var(--dsw-alias-label-tertiary);padding:0 2px}
+.pm-chip-btn:hover{color:var(--dsw-alias-label-error)}
 .pm-search{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);min-height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;font-size:13px;line-height:1.5}
 .pm-search:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}
 .pm-group{margin:0;padding:0}
@@ -170,6 +178,7 @@ window.__ModuleLoader__.load({
       const showUninstall = item.source === 'user' && !(item.pending && item.desired === 'removed')
       const canToggle = item.source !== 'injected' && !(item.pending && item.desired === 'removed')
       const showCancelUninstall = item.source === 'user' && item.pending && item.desired === 'removed'
+      const showUpdate = item.source === 'user' && !(item.pending && item.desired === 'removed')
       const toggleLabel = item.desired === 'disabled' ? '启用' : '禁用'
       const togglePath = item.desired === 'disabled' ? '/enable' : '/disable'
       return jsx('li', {
@@ -180,6 +189,7 @@ window.__ModuleLoader__.load({
             children: [
               jsx('span', { className: 'pm-id', children: displayId(item) }),
               sourceBadge(item.source),
+              item.group ? jsx('span', { className: 'pm-badge group', children: '▣ ' + item.group }) : null,
               jsx('span', { className: 'pm-st ' + ph.cls, children: ph.text }),
               pendingText(item),
             ],
@@ -209,6 +219,14 @@ window.__ModuleLoader__.load({
                     children: '卸载',
                   })
                 : null,
+              showUpdate
+                ? jsx('button', {
+                    className: 'pm-btn',
+                    disabled: busy !== null,
+                    onClick: () => onAction('/update', item.id, '更新'),
+                    children: '更新',
+                  })
+                : null,
               showCancelUninstall
                 ? jsx('button', {
                     className: 'pm-btn',
@@ -227,7 +245,7 @@ window.__ModuleLoader__.load({
 
 
     /** 紧凑实时信息流（只放进行中/刚完成）；失败任务用下方完整错误面板显示 */
-    function TasksPanel({ tasks }) {
+    function TasksPanel({ tasks, onDelegateAi, delegateBusy }) {
       const now = Date.now()
       const visible = tasks.filter((task) => {
         if (task.status === 'queued' || task.status === 'running') return true
@@ -303,8 +321,17 @@ window.__ModuleLoader__.load({
         ? jsxs('div', {
             className: 'pm-error-full',
             children: [
-              jsx('b', { children: '#' + failed[0].id + ' 安装失败 · ' + failed[0].label }),
+              jsx('b', { children: '#' + failed[0].id + ' 安装/更新失败 · ' + failed[0].label }),
               jsx('pre', { children: failed[0].error || '未知错误' }),
+              jsx('div', {
+                className: 'pm-actions',
+                children: jsx('button', {
+                  className: 'pm-btn pm-btn-danger',
+                  disabled: delegateBusy !== null,
+                  onClick: () => onDelegateAi(failed[0].id),
+                  children: delegateBusy === 'delegate:' + failed[0].id ? '已交给 AI…' : '交给 AI 配置',
+                }),
+              }),
             ],
           })
         : null
@@ -313,7 +340,7 @@ window.__ModuleLoader__.load({
       return jsxs('div', { children: [errorPanel, feed] })
     }
 
-    function InstallTab({ onRefresh }) {
+    function InstallTab({ onRefresh, onDelegateAi, delegateBusy }) {
       const [dir, setDir] = useState('')
       const [source, setSource] = useState('')
       const [dragging, setDragging] = useState(false)
@@ -425,7 +452,7 @@ window.__ModuleLoader__.load({
               jsx('span', { children: '允许执行构建脚本（仅对缺少 lib/ 的包生效；会执行该来源的 npm install / 构建脚本，请确认来源可信）' }),
             ],
           }),
-          jsx(TasksPanel, { tasks }),
+          jsx(TasksPanel, { tasks, onDelegateAi, delegateBusy }),
           jsxs('div', {
             className: 'pm-card',
             children: [
@@ -512,18 +539,25 @@ window.__ModuleLoader__.load({
     }
 
 
-    function ManageTab({ data, busy, onAction }) {
+    function ManageTab({ data, busy, onAction, onGroupApply }) {
       const [search, setSearch] = useState('')
-      const [collapsed, setCollapsed] = useState({ native: false, user: false })
+      const [collapsed, setCollapsed] = useState({ native: true, user: false })
+      const [groupFilter, setGroupFilter] = useState('')
       const items = (data && data.items) || []
+      const groups = (data && data.groups) || []
       const nativeAll = items.filter((i) => i.source === 'native')
       const userAll = items.filter((i) => i.source !== 'native') // user + injected 归入「用户」组
       const pendingCount = items.filter((i) => i.pending).length
 
       const q = search.trim().toLowerCase()
       const match = (i) => !q || displayId(i).toLowerCase().includes(q) || i.name.toLowerCase().includes(q) || i.id.toLowerCase().includes(q)
-      const nativeItems = nativeAll.filter(match)
-      const userItems = userAll.filter(match)
+      const matchGroup = (i) => {
+        if (!groupFilter) return true
+        if (groupFilter === '__none') return !i.group
+        return i.group === groupFilter
+      }
+      const nativeItems = nativeAll.filter((i) => match(i) && matchGroup(i))
+      const userItems = userAll.filter((i) => match(i) && matchGroup(i))
       const searching = q.length > 0
 
       const group = (key, title, all, filtered) => {
@@ -553,6 +587,48 @@ window.__ModuleLoader__.load({
         })
       }
 
+      const groupChips = groups.length
+        ? jsx('div', {
+            className: 'pm-groups-bar',
+            children: [
+              jsx('button', {
+                className: 'pm-group-chip' + (groupFilter === '' ? ' on' : ''),
+                onClick: () => setGroupFilter(''),
+                children: '全部分组',
+              }),
+              jsx('button', {
+                className: 'pm-group-chip' + (groupFilter === '__none' ? ' on' : ''),
+                onClick: () => setGroupFilter('__none'),
+                children: '未分组',
+              }),
+            ].concat(
+              groups.map((g) =>
+                jsxs('span', {
+                  key: g.name,
+                  className: 'pm-group-chip' + (groupFilter === g.name ? ' on' : ''),
+                  children: [
+                    jsx('span', {
+                      onClick: () => setGroupFilter(g.name === groupFilter ? '' : g.name),
+                      style: { cursor: 'pointer' },
+                      children: '▣ ' + g.name + ' · ' + g.plugins.length,
+                    }),
+                    jsx('button', {
+                      onClick: () => onGroupApply(g.name, 'enable'),
+                      title: '整组启用（写待重启队列）',
+                      children: '启用',
+                    }),
+                    jsx('button', {
+                      onClick: () => onGroupApply(g.name, 'disable'),
+                      title: '整组禁用（写待重启队列）',
+                      children: '禁用',
+                    }),
+                  ],
+                }),
+              ),
+            ),
+          })
+        : null
+
       return jsxs('div', {
         children: [
           jsx('p', {
@@ -573,6 +649,7 @@ window.__ModuleLoader__.load({
             value: search,
             onChange: (e) => setSearch(e.target.value),
           }),
+          groupChips,
           data === null
             ? jsx('p', { className: 'pm-empty', children: '加载中…' })
             : items.length === 0
@@ -584,6 +661,298 @@ window.__ModuleLoader__.load({
                 ],
               }),
           jsx('p', { className: 'pm-hint', children: data ? '配置位置：' + data.patchPath + ' · 刷新间隔 15s' : '' }),
+        ],
+      })
+    }
+
+    function PackagesTab({ data, onRefresh }) {
+      const [groupName, setGroupName] = useState('')
+      const [desired, setDesired] = useState('as-is')
+      const [selected, setSelected] = useState({})
+      const [packName, setPackName] = useState('my-dsh-pack')
+      const [busy, setBusy] = useState(null)
+      const [msg, setMsg] = useState(null)
+      const items = (data && data.items) || []
+      const groups = (data && data.groups) || []
+      const userItems = items.filter((i) => i.source === 'user')
+      const groupOf = (name) => groups.find((g) => g.plugins.includes(name))
+      const ungrouped = userItems.filter((i) => !groupOf(i.name))
+      const selectedNames = Object.keys(selected).filter((k) => selected[k])
+
+      const postJson = (path, body) =>
+        fetchJson(path, { method: 'POST', body: JSON.stringify(body) })
+
+      const toggle = (name) => setSelected((s) => ({ ...s, [name]: !s[name] }))
+
+      const saveGroup = () => {
+        const name = groupName.trim()
+        if (!name) {
+          setMsg({ text: '请填写分组名', isErr: true })
+          return
+        }
+        const plugins = selectedNames
+        if (!plugins.length) {
+          setMsg({ text: '请先勾选要加入分组的插件（可勾选未分组插件，或勾选其它组插件以移动）', isErr: true })
+          return
+        }
+        setBusy('save')
+        postJson('/groups/upsert', { name, desired, plugins })
+          .then((r) => {
+            if (!r || r.ok === false) {
+              setMsg({ text: (r && r.error) || '保存分组失败', isErr: true })
+              return
+            }
+            setMsg({ text: '已保存分组「' + name + '」（' + plugins.length + ' 个插件；一个插件只属于一个分组）', isErr: false })
+            setSelected({})
+            if (onRefresh) onRefresh()
+          })
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const removePlugin = (group, pluginName) => {
+        setBusy('remove:' + group.name)
+        postJson('/groups/upsert', {
+          name: group.name,
+          desired: group.desired,
+          plugins: group.plugins.filter((p) => p !== pluginName),
+        })
+          .then((r) => {
+            if (!r || r.ok === false) {
+              setMsg({ text: (r && r.error) || '移除失败', isErr: true })
+              return
+            }
+            setMsg({ text: '已从分组「' + group.name + '」移除 ' + pluginName, isErr: false })
+            if (onRefresh) onRefresh()
+          })
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const deleteGroup = (group) => {
+        if (!window.confirm('删除分组「' + group.name + '」？（不会卸载插件，只是取消分组）')) return
+        setBusy('delete:' + group.name)
+        postJson('/groups/delete', { name: group.name })
+          .then((r) => {
+            if (!r || r.ok === false) {
+              setMsg({ text: (r && r.error) || '删除失败', isErr: true })
+              return
+            }
+            setMsg({ text: '已删除分组「' + group.name + '」', isErr: false })
+            if (onRefresh) onRefresh()
+          })
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const applyGroup = (group, op) => {
+        setBusy('apply:' + group.name)
+        postJson('/groups/apply', { name: group.name, op })
+          .then((r) => {
+            if (!r || r.ok === false) {
+              setMsg({ text: (r && r.error) || '整组操作失败', isErr: true })
+              return
+            }
+            setMsg({ text: (r.result && r.result.message) || '已写入待重启队列', isErr: false })
+            if (onRefresh) onRefresh()
+          })
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const exportPack = () => {
+        const exportGroups = groups.filter((g) => g.plugins.length > 0)
+        if (!exportGroups.length) {
+          setMsg({ text: '还没有可导出的分组（请先创建分组并加入插件）', isErr: true })
+          return
+        }
+        const name = packName.trim() || 'dsh-plugin-pack'
+        const qs = '?name=' + encodeURIComponent(name) + '&groups=' + exportGroups.map((g) => encodeURIComponent(g.name)).join(',')
+        setBusy('export')
+        setMsg({ text: '正在打包并下载 ' + name + '.tgz …', isErr: false })
+        fetch(API + '/export-pack' + qs)
+          .then((r) => {
+            if (!r.ok) {
+              return r.json().then((j) => Promise.reject(new Error((j && j.error) || '导出失败')))
+            }
+            return r.blob()
+          })
+          .then((blob) => {
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = name + '.tgz'
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+            setMsg({ text: '已导出 ' + name + '.tgz（浏览器下载）。可在「插件安装」Tab 拖入该包一键安装，安装后自动恢复分组。', isErr: false })
+          })
+          .catch((err) => setMsg({ text: '导出失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const pluginRow = (item) => {
+        const checked = !!selected[item.name]
+        return jsx('li', {
+          key: item.id,
+          className: 'pm-row',
+          children: [
+            jsx('div', {
+              className: 'pm-row-head',
+              children: [
+                jsx('input', {
+                  type: 'checkbox',
+                  checked,
+                  onChange: () => toggle(item.name),
+                }),
+                jsx('span', { className: 'pm-id', children: displayId(item) }),
+                item.running.enabled ? null : jsx('span', { className: 'pm-st off', children: '已禁用' }),
+                item.group ? jsx('span', { className: 'pm-badge group', children: '▣ ' + item.group }) : null,
+              ],
+            }),
+          ],
+        })
+      }
+
+      return jsxs('div', {
+        children: [
+          jsx('p', {
+            className: 'pm-intro',
+            children: '把已安装的用户插件（无论启用/禁用）加入分组，导出为 .tgz 插件包。插件包可在「插件安装」Tab 拖入一键安装，安装后自动恢复分组。',
+          }),
+          jsxs('div', {
+            className: 'pm-card',
+            children: [
+              jsx('h3', { className: 'pm-card-title', children: '① 勾选插件 → 创建/更新分组' }),
+              jsx('div', {
+                className: 'pm-inline',
+                children: [
+                  jsx('input', {
+                    className: 'pm-input',
+                    placeholder: '分组名（例如：工具组 / 面板组）',
+                    value: groupName,
+                    onChange: (e) => setGroupName(e.target.value),
+                  }),
+                  jsx('select', {
+                    className: 'pm-input',
+                    style: { maxWidth: 180 },
+                    value: desired,
+                    onChange: (e) => setDesired(e.target.value),
+                    children: [
+                      jsx('option', { value: 'as-is', children: '保持现状 as-is' }),
+                      jsx('option', { value: 'enabled', children: '整组启用 enabled' }),
+                      jsx('option', { value: 'disabled', children: '整组禁用 disabled' }),
+                    ],
+                  }),
+                  jsx('button', {
+                    className: 'pm-btn',
+                    disabled: busy !== null,
+                    onClick: saveGroup,
+                    children: busy === 'save' ? '保存中…' : '保存分组',
+                  }),
+                ],
+              }),
+              jsx('p', { className: 'pm-hint', children: '勾选的插件会加入上面填写的分组；若这些插件已在其它分组，会自动移动过来（一个插件只属于一个分组）。' }),
+              userItems.length === 0
+                ? jsx('p', { className: 'pm-empty', children: '（没有用户插件）' })
+                : jsx('ul', { className: 'pm-list', children: userItems.map(pluginRow) }),
+            ],
+          }),
+          jsxs('div', {
+            className: 'pm-card',
+            children: [
+              jsx('h3', { className: 'pm-card-title', children: '② 已有分组' }),
+              groups.length === 0
+                ? jsx('p', { className: 'pm-empty', children: '（暂无分组）' })
+                : groups.map((g) =>
+                    jsxs('div', {
+                      key: g.name,
+                      className: 'pm-row',
+                      children: [
+                        jsx('div', {
+                          className: 'pm-row-head',
+                          children: [
+                            jsx('span', { className: 'pm-id', children: '▣ ' + g.name }),
+                            jsx('span', { className: 'pm-badge group', children: g.desired }),
+                            jsx('span', { className: 'pm-st pending', children: g.plugins.length + ' 个插件' }),
+                          ],
+                        }),
+                        jsx('div', {
+                          className: 'pm-actions',
+                          children: [
+                            jsx('button', {
+                              className: 'pm-btn',
+                              disabled: busy !== null,
+                              onClick: () => applyGroup(g, 'enable'),
+                              children: '整组启用',
+                            }),
+                            jsx('button', {
+                              className: 'pm-btn',
+                              disabled: busy !== null,
+                              onClick: () => applyGroup(g, 'disable'),
+                              children: '整组禁用',
+                            }),
+                            jsx('button', {
+                              className: 'pm-btn pm-btn-danger',
+                              disabled: busy !== null,
+                              onClick: () => deleteGroup(g),
+                              children: '删除',
+                            }),
+                          ],
+                        }),
+                        jsx('div', {
+                          className: 'pm-badges',
+                          children: g.plugins.map((name) =>
+                            jsx('span', {
+                              key: name,
+                              className: 'pm-badge user',
+                              children: [
+                                name,
+                                jsx('button', {
+                                  className: 'pm-chip-btn',
+                                  disabled: busy !== null,
+                                  onClick: () => removePlugin(g, name),
+                                  children: ' ×',
+                                }),
+                              ],
+                            }),
+                          ),
+                        }),
+                      ],
+                    }),
+                  ),
+            ],
+          }),
+          jsxs('div', {
+            className: 'pm-card',
+            children: [
+              jsx('h3', { className: 'pm-card-title', children: '③ 导出插件包' }),
+              jsx('p', { className: 'pm-card-desc', children: '导出所有分组为 .tgz（浏览器下载）。包内含 package.json + manifest.yml + plugins/，可在「插件安装」Tab 拖入安装。' }),
+              jsx('div', {
+                className: 'pm-inline',
+                children: [
+                  jsx('input', {
+                    className: 'pm-input',
+                    placeholder: '包名（默认 my-dsh-pack）',
+                    value: packName,
+                    onChange: (e) => setPackName(e.target.value),
+                  }),
+                  jsx('button', {
+                    className: 'pm-btn',
+                    disabled: busy !== null,
+                    onClick: exportPack,
+                    children: busy === 'export' ? '导出中…' : '导出插件包',
+                  }),
+                ],
+              }),
+            ],
+          }),
+          msg
+            ? jsx('div', {
+                className: 'pm-msg' + (msg.isErr ? ' err' : ''),
+                children: msg.text,
+              })
+            : null,
         ],
       })
     }
@@ -629,6 +998,39 @@ window.__ModuleLoader__.load({
           .finally(() => setBusy(null))
       }
 
+      const onGroupApply = (name, op) => {
+        setBusy(name + ':group:' + op)
+        setMsg(null)
+        fetchJson('/groups/apply', { method: 'POST', body: JSON.stringify({ name, op }) })
+          .then((r) => {
+            if (!r || r.ok === false) {
+              setMsg({ text: (r && r.error) || '整组操作失败', isErr: true })
+              return
+            }
+            const result = r.result || {}
+            setMsg({ text: result.message || '已写入待重启队列', isErr: false })
+            refresh()
+          })
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
+      const onDelegateAi = (taskId) => {
+        setBusy('delegate:' + taskId)
+        setMsg(null)
+        fetchJson('/delegate-ai', { method: 'POST', body: JSON.stringify({ taskId }) })
+          .then((r) => {
+            if (!r || r.ok === false) {
+              setMsg({ text: (r && r.error) || '交给 AI 配置失败', isErr: true })
+              return
+            }
+            const result = r.result || {}
+            setMsg({ text: result.message || '已交给 AI 配置', isErr: false })
+          })
+          .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
+          .finally(() => setBusy(null))
+      }
+
       return jsxs('div', {
         className: 'pm-sec',
         children: [
@@ -645,10 +1047,10 @@ window.__ModuleLoader__.load({
               }),
             ),
           }),
-          tab === 'manage' ? jsx(ManageTab, { data, busy, onAction }) : null,
-          tab === 'download' ? jsx(InstallTab, { onRefresh: refresh }) : null,
+          tab === 'manage' ? jsx(ManageTab, { data, busy, onAction, onGroupApply }) : null,
+          tab === 'download' ? jsx(InstallTab, { onRefresh: refresh, onDelegateAi, delegateBusy: busy }) : null,
           tab === 'develop' ? jsx(Placeholder, { title: '开发插件', desc: '生成插件骨架、构建、注入调试 —— 暂未开放。' }) : null,
-          tab === 'packages' ? jsx(Placeholder, { title: '插件包', desc: '本地插件包（.tgz）管理 —— 暂未开放。' }) : null,
+          tab === 'packages' ? jsx(PackagesTab, { data, onRefresh: refresh }) : null,
           msg
             ? jsx('div', {
                 className: 'pm-msg' + (msg.isErr ? ' err' : ''),

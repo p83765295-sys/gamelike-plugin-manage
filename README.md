@@ -20,10 +20,10 @@ DSH 插件管理 UI，入口：**设置 → 插件管理**（`settings.section`�
 
 | 模块 | 状态 | 功能 |
 |---|---|---|
-| M1 管理插件 | ✅ 完成 | 全部 loader 行列表；原生/用户两组折叠 + 搜索；hash id 显示友好短名 |
-| M2 插件安装 | ✅ 完成 | 本地目录 / tgz 拖拽上传 / GitHub / npm，安装队列 + 进度条 |
+| M1 管理插件 | ✅ 完成 | 全部 loader 行列表；原生/用户两组折叠 + 搜索；hash id 显示友好短名；原生默认折叠；分组徽标/过滤/整组启用禁用；用户插件更新 |
+| M2 插件安装 | ✅ 完成 | 本地目录 / tgz 拖拽上传 / GitHub / npm，安装队列 + 进度条；失败任务「交给 AI 配置」 |
 | M3 开发插件 | ⬜ 空壳 | 占位 |
-| M4 插件包 | ⬜ 空壳 | 占位 |
+| M4 插件包 | ✅ 完成 | 用户插件随意分组（一组一个插件、映射到 M1）→ 导出 .tgz 插件包（浏览器下载）；包可拖入 M2 安装并自动恢复分组 |
 
 ### M1 规则（用户拍板过的）
 
@@ -63,22 +63,30 @@ DSH 插件管理 UI，入口：**设置 → 插件管理**（`settings.section`�
 | `src/config.ts` | Config：`profile`(默认 web)、`home`；`pluginsDir` = `dirname(home)/dsh-plugins` |
 | `src/types.ts` | 列表/来源/pending 类型 |
 | `src/profile.ts` | 持久层读写：package.json bundles/deps、cordis.patch.yml YAML 编辑（yaml 库保留注释）、pending.json |
+| `src/groups.ts` | 插件分组持久层：`~/.dsh/plugin-manage-groups.yml`（M4 创建，M1 映射） |
 | `src/service.ts` | 列表/禁用/启用/卸载/取消卸载/applyPending + M2 enqueue（prepare 并行、activate 串行） |
-| `src/installer.ts` | M2 两阶段：prepareLocal/prepareTgz/prepareSource + activatePrepared；安全策略；node-pty 宿主复用；bundle-only 检测 |
+| `src/installer.ts` | M2 两阶段：prepareLocal/prepareTgz/prepareSource + activatePrepared；安全策略；node-pty 宿主复用；bundle-only 检测；插件包识别/准备；M1 更新（git pull / 重准备）；M4 导出打包 |
 | `src/tasks.ts` | InstallQueue：3 并行、finalize 串行链、步骤、进度、历史 40 条 |
 | `src/gateway.ts` | webServer prefix 路由 `/plugin-manage/api`；tgz 上传体上限 128MiB |
-| `src/client/bundle.js` | 手写零构建 client：四个 Tab；M1 列表；M2 表单 + 紧凑实时信息流（只显示进行中 + 完成8s/失败30s） |
+| `src/client/bundle.js` | 手写零构建 client：四个 Tab；M1 列表（原生默认折叠 + 分组过滤 + 整组启用/禁用 + 更新按钮）；M2 表单 + 紧凑实时信息流（失败任务可「交给 AI 配置」）；M4 分组/导出 |
 
 ## 4. HTTP API（`/plugin-manage/api`）
 
 | 方法/路径 | 说明 |
 |---|---|
-| GET `/list` | M1 完整状态 |
+| GET `/list` | M1 完整状态（items 含 `group` 字段；快照含 `groups`） |
 | POST `/disable` `/enable` `/uninstall` `/cancel-uninstall` | body `{id}`；写 pending 队列 |
-| GET `/install-tasks` | 安装队列快照（含步骤与进度） |
+| POST `/update` | body `{id}`；用户插件更新（git pull / 重准备），走安装队列，重启后生效 |
+| POST `/delegate-ai` | body `{taskId}`；失败任务「交给 AI 配置」→ 写 `~/.dsh/plugin-manage.ai-config-request.json` |
+| GET `/install-tasks` | 安装队列快照（含步骤与进度；`kind` 可能为 `update`） |
 | POST `/install-local` | body `{path, allowBuild}` → 立即返回 `{taskId,message}` |
-| POST `/install-tgz` | 二进制 body + `x-file-name` / `x-allow-build` 头 |
+| POST `/install-tgz` | 二进制 body + `x-file-name` / `x-allow-build` 头；支持 `dsh-plugin-pack@1` 插件包 |
 | POST `/install-source` | body `{source, allowBuild}`，GitHub 或 npm |
+| GET `/groups` | M4 分组列表 |
+| POST `/groups/upsert` | body `{name, desired, plugins[]}`；保存分组（一个插件只属一组） |
+| POST `/groups/delete` | body `{name}` |
+| POST `/groups/apply` | body `{name, op: enable|disable}`；整组写 pending |
+| GET `/export-pack` | query `name` + `groups=a,b`；导出 .tgz 插件包（浏览器下载） |
 
 ## 5. 构建 / 热重载 / 测试
 

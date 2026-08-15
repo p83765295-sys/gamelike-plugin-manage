@@ -9,7 +9,7 @@ export type DesiredState = 'enabled' | 'disabled' | 'removed'
 /** 一条已落盘的待重启变更 */
 export interface PendingChange {
   id: string
-  op: 'disable' | 'enable' | 'uninstall'
+  op: 'disable' | 'enable' | 'uninstall' | 'update'
   ts: number
   /** 仅 uninstall 有：撤销信息 */
   undo?: UninstallUndo
@@ -36,6 +36,15 @@ export interface PluginItem {
   uninstallable: boolean
   /** 临时注入提示 */
   ephemeral?: string
+  /** 所属分组名（M4 创建，M1 展示） */
+  group?: string
+}
+
+/** M4 插件分组（映射到 M1） */
+export interface PluginGroup {
+  name: string
+  desired: 'enabled' | 'disabled' | 'as-is'
+  plugins: string[]
 }
 
 /** GET /list 返回的完整快照 */
@@ -46,6 +55,23 @@ export interface PluginManageSnapshot {
   packagePath: string
   items: PluginItem[]
   pending: PendingChange[]
+  groups: PluginGroup[]
+}
+
+/** 导出的插件包 manifest 里的一组 */
+export interface PackGroup {
+  name: string
+  desired: 'enabled' | 'disabled' | 'as-is'
+  plugins: { name: string; path: string; sha256: string }[]
+}
+
+/** 导出插件包结果 */
+export interface ExportPackResult {
+  fileName: string
+  filePath: string
+  /** 导出的插件数 */
+  pluginCount: number
+  groups: string[]
 }
 
 /** 一次操作的结果 */

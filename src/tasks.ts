@@ -4,7 +4,7 @@
  */
 import type { InstallResult } from './installer.js'
 
-export type InstallKind = 'local' | 'tgz' | 'source'
+export type InstallKind = 'local' | 'tgz' | 'source' | 'update'
 
 export interface TaskStep {
   ts: number

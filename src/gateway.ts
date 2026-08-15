@@ -1,6 +1,8 @@
+import { createReadStream, existsSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PluginManageService } from './service.js'
+import { cleanupExport } from './installer.js'
 
 export const API_PREFIX = '/plugin-manage/api'
 
@@ -48,6 +50,12 @@ export function registerGateway(ctx: Context, svc: PluginManageService, log?: Lo
     return
   }
 
+  const parseJson = async <T,>(req: IncomingMessage): Promise<T> => {
+    const text = (await readBody(req)).trim()
+    if (!text) throw new Error('缺少请求体')
+    return JSON.parse(text) as T
+  }
+
   const parseId = async (req: IncomingMessage): Promise<string> => {
     const text = (await readBody(req)).trim()
     if (!text) throw new Error('缺少请求体')
@@ -71,6 +79,66 @@ export function registerGateway(ctx: Context, svc: PluginManageService, log?: Lo
           }
           if (req.method === 'GET' && path === '/install-tasks') {
             return send(res, 200, { ok: true, tasks: svc.listTasks() })
+          }
+          if (req.method === 'GET' && path === '/groups') {
+            return send(res, 200, { ok: true, groups: svc.listGroups() })
+          }
+          if (req.method === 'POST' && path === '/groups/upsert') {
+            const body = await parseJson<{ name?: unknown; desired?: unknown; plugins?: unknown }>(req)
+            const name = String(body?.name ?? '').trim()
+            if (!name) return send(res, 400, { ok: false, error: '分组名必填' })
+            const desired = body?.desired === 'enabled' || body?.desired === 'disabled' ? body.desired : 'as-is'
+            const plugins = Array.isArray(body?.plugins)
+              ? body.plugins.map((p) => String(p).trim()).filter(Boolean)
+              : []
+            return send(res, 200, { ok: true, groups: svc.upsertGroup(name, desired, plugins) })
+          }
+          if (req.method === 'POST' && path === '/groups/delete') {
+            const body = await parseJson<{ name?: unknown }>(req)
+            const name = String(body?.name ?? '').trim()
+            if (!name) return send(res, 400, { ok: false, error: '分组名必填' })
+            return send(res, 200, { ok: true, groups: svc.deleteGroup(name) })
+          }
+          if (req.method === 'POST' && path === '/groups/apply') {
+            const body = await parseJson<{ name?: unknown; op?: unknown }>(req)
+            const name = String(body?.name ?? '').trim()
+            const op = body?.op === 'enable' ? 'enable' : body?.op === 'disable' ? 'disable' : ''
+            if (!name || !op) return send(res, 400, { ok: false, error: 'name 与 op(enable|disable) 必填' })
+            return send(res, 200, { ok: true, result: await svc.applyGroup(name, op) })
+          }
+          if (req.method === 'POST' && path === '/update') {
+            return send(res, 200, { ok: true, result: svc.update(await parseId(req)) })
+          }
+          if (req.method === 'POST' && path === '/delegate-ai') {
+            const body = await parseJson<{ taskId?: unknown }>(req)
+            const taskId = Number(body?.taskId)
+            if (!Number.isInteger(taskId) || taskId <= 0) {
+              return send(res, 400, { ok: false, error: 'taskId 必填' })
+            }
+            return send(res, 200, { ok: true, result: await svc.delegateAi(taskId) })
+          }
+          if (req.method === 'GET' && path === '/export-pack') {
+            const url = new URL(req.url ?? '/', 'http://localhost')
+            const packName = url.searchParams.get('name') || 'dsh-plugin-pack'
+            const groupNames = (url.searchParams.get('groups') || '').split(',').map((x) => x.trim()).filter(Boolean)
+            const exported = await svc.exportPack(packName, groupNames)
+            const filePath = exported.filePath
+            if (!existsSync(filePath)) throw new Error('导出文件不存在: ' + filePath)
+            const size = statSync(filePath).size
+            res.writeHead(200, {
+              'content-type': 'application/gzip',
+              'content-length': String(size),
+              'content-disposition': `attachment; filename="${exported.fileName}"`,
+            })
+            const stream = createReadStream(filePath)
+            stream.on('error', () => {
+              try { res.destroy() } catch { /* ignore */ }
+            })
+            stream.on('close', () => {
+              try { cleanupExport(filePath) } catch { /* ignore */ }
+            })
+            stream.pipe(res)
+            return
           }
           if (req.method === 'POST' && path === '/disable') {
             return send(res, 200, { ok: true, result: await svc.disable(await parseId(req)) })

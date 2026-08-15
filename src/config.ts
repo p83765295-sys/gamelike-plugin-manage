@@ -24,6 +24,10 @@ export interface ResolvedPaths {
   pendingPath: string
   /** M2 解包/克隆根：必须在 .dsh 之外（DSH loader 对 .dsh 路径的依赖解析有限制） */
   pluginsDir: string
+  /** M4 插件分组持久化 */
+  groupsPath: string
+  /** M2/M1 「交给 AI 配置」降级请求文件 */
+  aiRequestPath: string
 }
 
 export function resolvePaths(config: Config): ResolvedPaths {
@@ -37,5 +41,7 @@ export function resolvePaths(config: Config): ResolvedPaths {
     patchPath: join(profileDir, 'cordis.patch.yml'),
     pendingPath: join(home, 'plugin-manage.pending.json'),
     pluginsDir: join(dirname(home), 'dsh-plugins'),
+    groupsPath: join(home, 'plugin-manage-groups.yml'),
+    aiRequestPath: join(home, 'plugin-manage.ai-config-request.json'),
   }
 }

@@ -2,19 +2,31 @@
  * 插件管理服务：只读运行树 + 读/写 profile 持久层 + M2 安装队列。
  * 所有变更操作只写配置文件与 pending 记录，当前进程的 loader 树保持不动。
  */
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
 import {
   activatePrepared,
+  cleanupExport,
+  exportPack,
   prepareLocal,
   prepareSource,
   prepareTgz,
+  prepareUpdate,
   type InstallOptions,
   type InstallResult,
   type Prepared,
 } from './installer.js'
 import { InstallQueue, type InstallTask, type TaskContext } from './tasks.js'
+import {
+  deleteGroup,
+  groupOfPlugin,
+  readGroups,
+  upsertGroup,
+  type PluginGroup,
+} from './groups.js'
 import {
   messageOf,
   pendingOf,
@@ -30,7 +42,7 @@ import {
   writePatchDisabled,
   type ProfileBundle,
 } from './profile.js'
-import type { ActionOk, DesiredState, PluginItem, PluginManageSnapshot, PluginSource } from './types.js'
+import type { ActionOk, DesiredState, ExportPackResult, PluginItem, PluginManageSnapshot, PluginSource } from './types.js'
 
 export interface TaskAccepted {
   taskId: number
@@ -46,11 +58,23 @@ export interface PluginManageService {
   cancelUninstall(id: string): Promise<ActionOk>
   /** 重启后应用 pending：把待重启操作真正写入 profile 配置 */
   applyPending(): Promise<void>
+  /** M1 更新插件（仅 link 目录用户插件；重启后生效） */
+  update(id: string): TaskAccepted
   /** M2 安装队列：提交后立即返回任务号 */
   installLocal(path: string, opts?: InstallOptions): TaskAccepted
   installTgz(fileName: string, buffer: Buffer, opts?: InstallOptions): TaskAccepted
   installSource(source: string, opts?: InstallOptions): TaskAccepted
   listTasks(): InstallTask[]
+  /** M4 插件分组 */
+  listGroups(): PluginGroup[]
+  upsertGroup(name: string, desired: PluginGroup['desired'], plugins: string[]): PluginGroup[]
+  deleteGroup(name: string): PluginGroup[]
+  /** M1 整组启用/禁用：对组内全部用户插件写 pending（重启后生效） */
+  applyGroup(name: string, op: 'enable' | 'disable'): Promise<ActionOk>
+  /** M4 导出插件包 */
+  exportPack(packName: string, groupNames: string[]): Promise<ExportPackResult>
+  /** M2/M1 失败任务「交给 AI 配置」：落一份结构化请求文件供 AI 会话读取 */
+  delegateAi(taskId: number): Promise<{ method: 'file'; path: string; message: string }>
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -115,6 +139,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
     let pending = readPending(paths.pendingPath)
     const runningMap = runningById()
     pending = prunePending(paths.pendingPath, pending, new Map([...runningMap].map(([id, v]) => [id, v.enabled])))
+    const groups = readGroups(paths.groupsPath)
 
     const items: PluginItem[] = []
     for (const entry of loader.entries()) {
@@ -143,6 +168,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
         pending: change !== undefined,
         uninstallable: source !== 'native',
         ephemeral: source === 'injected' ? '临时注入，重启后自动消失；不能持久禁用/卸载' : undefined,
+        group: groupOfPlugin(groups, name)?.name,
       })
     }
 
@@ -158,6 +184,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       packagePath: paths.packagePath,
       items,
       pending,
+      groups,
     }
   }
 
@@ -184,9 +211,63 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       const onStep = (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => t.step(text, level)
       const onProgress = (value: number) => t.progress(value)
       const prepared = await prepare(t, { ...opts, onStep, onProgress })
-      return t.finalize(() => activatePrepared(ctx, paths, prepared, { onStep, onProgress }))
+      return t.finalize(async () => {
+        const results = await activatePrepared(ctx, paths, prepared, { onStep, onProgress })
+        if (prepared.kind === 'pack' && prepared.pack) {
+          applyPackGroups(
+            prepared.pack.groups.map((g) => ({
+              name: g.name,
+              desired: g.desired,
+              plugins: g.plugins.map((p) => p.name),
+            })),
+            onStep,
+          )
+        }
+        return results
+      })
     })
     return { taskId: task.id, message: `已加入安装队列 #${task.id}（最多 3 个任务并行，装配阶段自动排队）` }
+  }
+
+  /** 插件包安装后恢复分组；并对 desired != as-is 的组写 pending（重启后整组生效） */
+  function applyPackGroups(groups: PluginGroup[], onStep: (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => void): void {
+    for (const group of groups) {
+      upsertGroup(paths.groupsPath, group)
+    }
+    const all = readGroups(paths.groupsPath)
+    let applied = 0
+    for (const group of all) {
+      if (group.desired === 'as-is') continue
+      for (const pluginName of group.plugins) {
+        const entry = [...loader.entries()].find((e) => !e.options.group && e.options.name === pluginName)
+        if (!entry) continue // bundle-only / 尚未进入运行树：重启后由 include 装配
+        upsertPending(paths.pendingPath, {
+          id: entry.id,
+          op: group.desired === 'enabled' ? 'enable' : 'disable',
+          ts: Date.now(),
+        })
+        applied++
+      }
+    }
+    if (applied > 0) {
+      onStep(`已恢复分组；已为 ${applied} 个运行中插件写入待重启状态（重启后按组生效）`, 'ok')
+    } else {
+      onStep('已恢复分组（组内插件将在重启装配后按 desired 状态生效）', 'ok')
+    }
+  }
+
+  function userNames(): Set<string> {
+    const bundles = readUserBundles(paths.packagePath)
+    const patchIds = readPatchInsertIds(paths.patchPath)
+    const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
+    const set = new Set<string>()
+    for (const entry of loader.entries()) {
+      if (entry.options.group) continue
+      if (classify(entry.id, entry.options.name, bundles, patchIds, bundleInserts) === 'user') {
+        set.add(entry.options.name)
+      }
+    }
+    return set
   }
 
   return {
@@ -250,6 +331,11 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
           const patchIds = readPatchInsertIds(paths.patchPath)
           const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
           const source = classify(change.id, name, bundles, patchIds, bundleInserts)
+          if (change.op === 'update') {
+            // 更新已在任务执行时完成（git pull / 重新构建），重启后即生效；
+            // 这里无需写配置，该条 pending 会被 prune 在重启后清理。
+            continue
+          }
           if (change.op === 'disable') {
             writePatchDisabled(paths.patchPath, patchId, true)
           } else if (change.op === 'enable') {
@@ -279,6 +365,25 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       }
     },
 
+    update: (id: string): TaskAccepted => {
+      const { name, source } = requireRunning(id)
+      if (source !== 'user') {
+        throw new Error(`「${name}」不是用户插件，暂不支持更新（原生/临时注入只读）`)
+      }
+      const task = queue.enqueue('update', `更新 ${name}`, async (t) => {
+        const onStep = (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => t.step(text, level)
+        const onProgress = (value: number) => t.progress(value)
+        prepareUpdate(paths, name, { onStep, onProgress })
+        return t.finalize(async () => {
+          upsertPending(paths.pendingPath, { id, op: 'update', ts: Date.now() })
+          onProgress(100)
+          onStep(`更新完成：${name}（重启 DSH 后生效）`, 'ok')
+          return []
+        })
+      })
+      return { taskId: task.id, message: `已加入更新队列 #${task.id}（准备阶段并行，最多 3 路）。更新完成后重启 DSH 生效。` }
+    },
+
     installLocal: (path: string, opts: InstallOptions = {}) =>
       enqueue('local', `本地目录 ${path}`, opts, (t, o) => Promise.resolve(prepareLocal(paths, path, o))),
 
@@ -289,6 +394,81 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       enqueue('source', source, opts, (t, o) => prepareSource(paths, source, o)),
 
     listTasks: () => queue.snapshot(),
+
+    listGroups: () => readGroups(paths.groupsPath),
+
+    upsertGroup: (name: string, desired: PluginGroup['desired'], plugins: string[]): PluginGroup[] => {
+      const clean = name.trim()
+      if (!clean) throw new Error('分组名必填')
+      const users = userNames()
+      const valid: string[] = []
+      for (const pluginName of plugins) {
+        if (users.has(pluginName)) valid.push(pluginName)
+      }
+      if (valid.length === 0) throw new Error('分组里没有可用的用户插件')
+      return upsertGroup(paths.groupsPath, { name: clean, desired, plugins: valid })
+    },
+
+    deleteGroup: (name: string): PluginGroup[] => deleteGroup(paths.groupsPath, name),
+
+    async applyGroup(name: string, op: 'enable' | 'disable'): Promise<ActionOk> {
+      const groups = readGroups(paths.groupsPath)
+      const group = groups.find((g) => g.name === name)
+      if (!group) throw new Error(`没有分组: ${name}`)
+      if (group.plugins.length === 0) throw new Error(`分组「${name}」没有插件`)
+      const users = userNames()
+      let count = 0
+      for (const pluginName of group.plugins) {
+        if (!users.has(pluginName)) continue
+        const entry = [...loader.entries()].find((e) => !e.options.group && e.options.name === pluginName)
+        if (!entry) continue
+        upsertPending(paths.pendingPath, { id: entry.id, op, ts: Date.now() })
+        count++
+      }
+      if (count === 0) throw new Error(`分组「${name}」没有可操作的用户插件（可能尚未装配）`)
+      return {
+        id: name,
+        op,
+        message: `已记录待重启操作：${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${count} 个插件。当前运行不变，重启 DSH 后生效。`,
+      }
+    },
+
+    async exportPack(packName: string, groupNames: string[]): Promise<ExportPackResult> {
+      const all = readGroups(paths.groupsPath)
+      const selected = groupNames.length > 0 ? all.filter((g) => groupNames.includes(g.name)) : all
+      return exportPack(paths, selected, packName.trim() || 'dsh-plugin-pack')
+    },
+
+    async delegateAi(taskId: number): Promise<{ method: 'file'; path: string; message: string }> {
+      const tasks = queue.snapshot()
+      const task = tasks.find((t) => t.id === taskId)
+      if (!task) throw new Error(`没有任务 #${taskId}`)
+      const request = {
+        createdAt: new Date().toISOString(),
+        type: 'plugin-manage.ai-config-request',
+        version: 1,
+        task: {
+          id: task.id,
+          kind: task.kind,
+          label: task.label,
+          status: task.status,
+          error: task.error,
+          progress: task.progress,
+          steps: task.steps,
+          result: task.result,
+        },
+        instructions:
+          '这是 DSH 插件管理（gamelike-plugin-manage）的失败任务。「交给 AI 配置」按钮由用户点击。' +
+          '请阅读 task 中的错误与步骤，定位失败原因并直接修复配置/代码，或给出用户可执行的修复方案。',
+      }
+      mkdirSync(dirname(paths.aiRequestPath), { recursive: true })
+      writeFileSync(paths.aiRequestPath, JSON.stringify(request, null, 2) + '\n')
+      return {
+        method: 'file',
+        path: paths.aiRequestPath,
+        message: `已生成 AI 配置请求：${paths.aiRequestPath}。请让 AI 会话读取该文件继续处理（或直接把该文件内容贴给 AI）。`,
+      }
+    },
   }
 }
 
