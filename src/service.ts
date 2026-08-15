@@ -19,6 +19,7 @@ import {
   messageOf,
   pendingOf,
   prunePending,
+  readBundleInsertMap,
   readPatchInsertIds,
   readPending,
   readUserBundles,
@@ -68,10 +69,19 @@ const FIBER_PHASE: Record<number, string | null> = {
   5: 'unloading',
 }
 
-function classify(id: string, name: string, bundles: ProfileBundle[], patchIds: Set<string>): PluginSource {
+function classify(
+  id: string,
+  name: string,
+  bundles: ProfileBundle[],
+  patchIds: Set<string>,
+  bundleInserts: Map<string, string>,
+): PluginSource {
   const patchId = patchIdOf(id)
-  if (name.startsWith('@deepseek-ai/') || name.startsWith('node:') || name.startsWith('cordis:')) return 'native'
+  // 用户 bundle 的 patch 插入行优先：行 name 可能是官方包名（如 archify 插入 skill-filesystem），
+  // 但行本身来自用户安装的 bundle → 必须归为用户。
   if (patchIds.has(patchId) || patchIds.has(id)) return 'user'
+  if (bundleInserts.has(patchId) || bundleInserts.has(id)) return 'user'
+  if (name.startsWith('@deepseek-ai/') || name.startsWith('node:') || name.startsWith('cordis:')) return 'native'
   if (bundles.some((bundle) => bundle.name === name || bundle.name === id || bundle.name === patchId)) return 'user'
   return 'injected'
 }
@@ -101,6 +111,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
   function list(): PluginManageSnapshot {
     const bundles = readUserBundles(paths.packagePath)
     const patchIds = readPatchInsertIds(paths.patchPath)
+    const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
     let pending = readPending(paths.pendingPath)
     const runningMap = runningById()
     pending = prunePending(paths.pendingPath, pending, new Map([...runningMap].map(([id, v]) => [id, v.enabled])))
@@ -110,7 +121,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       if (entry.options.group) continue
       const id = entry.id
       const name = entry.options.name
-      const source = classify(id, name, bundles, patchIds)
+      const source = classify(id, name, bundles, patchIds, bundleInserts)
       const enabled = !entry.disabled
       const running = {
         id,
@@ -155,7 +166,8 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
     if (!entry) throw new Error(`运行树中没有插件: ${id}`)
     const bundles = readUserBundles(paths.packagePath)
     const patchIds = readPatchInsertIds(paths.patchPath)
-    const source = classify(id, entry.options.name, bundles, patchIds)
+    const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
+    const source = classify(id, entry.options.name, bundles, patchIds, bundleInserts)
     if (source === 'injected') {
       throw new Error(`"${id}" 是临时注入插件（重启后自动消失），不能持久操作`)
     }
@@ -236,7 +248,8 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
           const name = entry.options.name
           const bundles = readUserBundles(paths.packagePath)
           const patchIds = readPatchInsertIds(paths.patchPath)
-          const source = classify(change.id, name, bundles, patchIds)
+          const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
+          const source = classify(change.id, name, bundles, patchIds, bundleInserts)
           if (change.op === 'disable') {
             writePatchDisabled(paths.patchPath, patchId, true)
           } else if (change.op === 'enable') {
@@ -244,6 +257,11 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
           } else if (change.op === 'uninstall') {
             if (source === 'native') continue
             let done = false
+            const insertBundle = bundleInserts.get(patchId) || bundleInserts.get(change.id)
+            if (insertBundle) {
+              done = removeBundle(paths.packagePath, insertBundle) || done
+              writePatchDisabled(paths.patchPath, patchId, true)
+            }
             const bundle = bundleOf(name, bundles)
             if (bundle) {
               done = removeBundle(paths.packagePath, bundle.name) || done

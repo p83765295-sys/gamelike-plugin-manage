@@ -365,3 +365,35 @@ export function removePending(path: string, id: string): PendingChange[] {
   writePending(path, next)
   return next
 }
+
+/** 用户 bundle 的 patch 插入行 id → bundle 包名（用于把官方包名但用户插入的行归类为用户插件） */
+export function readBundleInsertMap(packagePath: string, profileDir: string): Map<string, string> {
+  const map = new Map<string, string>()
+  const pkg = readProfilePackage(packagePath)
+  const bundles = pkg.dsh?.profile?.bundles ?? []
+  const deps = pkg.dependencies ?? {}
+  const OFFICIAL_BASE = new Set(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+  for (const name of bundles) {
+    if (OFFICIAL_BASE.has(name)) continue
+    let dir = ''
+    const dep = deps[name]
+    if (typeof dep === 'string' && dep.startsWith('link:')) {
+      const rel = dep.slice('link:'.length)
+      dir = rel.startsWith('/') ? rel : join(profileDir, rel)
+    } else {
+      dir = join(profileDir, 'node_modules', ...name.split('/'))
+    }
+    if (!existsSync(dir)) continue
+    try {
+      const pkgJson = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+      const patchRel = pkgJson.dsh?.bundle?.patch
+      if (typeof patchRel !== 'string') continue
+      const patchPath = join(dir, patchRel)
+      if (!existsSync(patchPath)) continue
+      for (const id of readPatchInsertIds(patchPath)) map.set(id, name)
+    } catch {
+      // 单个 bundle 元数据损坏不影响其它分类
+    }
+  }
+  return map
+}
