@@ -30,6 +30,8 @@ export interface InstallOptions {
   /** 用户明确授权后，才允许执行 npm install / 构建脚本（默认 false） */
   allowBuild?: boolean
   onStep?: StepFn
+  /** 阶段进度回调（0-100） */
+  onProgress?: (value: number) => void
 }
 
 export interface Prepared {
@@ -136,14 +138,19 @@ function patchNodePty(dir: string): void {
 
 /** 依赖安装（零脚本）：解压包/克隆仓库没有 node_modules 时必须先装依赖 */
 function ensureDependencies(dir: string, opts: InstallOptions, step: StepFn): void {
-  if (existsSync(join(dir, 'node_modules'))) return
+  if (existsSync(join(dir, 'node_modules'))) {
+    opts.onProgress?.(40)
+    return
+  }
   const pkg = readPkg(dir)
+  opts.onProgress?.(20)
   step('安装依赖（npm install --ignore-scripts，不执行生命周期脚本）…')
   try {
     run('npm', ['install', '--include=dev', '--no-audit', '--no-fund', '--ignore-scripts'], dir, 240_000)
   } catch (error) {
     throw new Error(`自动安装依赖失败（可本地构建后重试）: ${messageOf(error)}`)
   }
+  opts.onProgress?.(40)
   try {
     if (pkg.devDependencies?.tsdown && !existsSync(join(dir, 'node_modules', 'unrun'))) {
       step('补齐 tsdown 构建器依赖（unrun）…')
@@ -160,7 +167,10 @@ function ensureDependencies(dir: string, opts: InstallOptions, step: StepFn): vo
 
 /** lib 缺失时按授权决定是否构建；默认拒绝（构建 = 执行第三方代码） */
 function ensureBuilt(dir: string, opts: InstallOptions, step: StepFn): void {
-  if (existsSync(join(dir, 'lib'))) return
+  if (existsSync(join(dir, 'lib'))) {
+    opts.onProgress?.(70)
+    return
+  }
   if (!opts.allowBuild) {
     throw new Error(
       '该包尚未构建（缺少 lib/）。自动构建会在本机执行 npm install 与构建脚本，存在代码执行风险；' +
@@ -181,14 +191,17 @@ function ensureBuilt(dir: string, opts: InstallOptions, step: StepFn): void {
     throw new Error(`自动构建失败（可本地构建后重试）: ${messageOf(error)}`)
   }
   if (!existsSync(join(dir, 'lib'))) throw new Error('构建完成但仍未生成 lib/，请检查构建脚本')
+  opts.onProgress?.(70)
 }
 
 /** 一个插件目录的完整准备（依赖 + 构建 + 原生补丁） */
 function prepareDir(dir: string, opts: InstallOptions, step: StepFn): void {
   readPkg(dir)
+  opts.onProgress?.(15)
   ensureDependencies(dir, opts, step)
   ensureBuilt(dir, opts, step)
   patchNodePty(dir)
+  opts.onProgress?.(80)
   step(`准备完成: ${dir}`, 'ok')
 }
 
@@ -230,6 +243,7 @@ function copyPreset(paths: ResolvedPaths, src: string): string {
 
 export function prepareLocal(paths: ResolvedPaths, rawPath: string, opts: InstallOptions = {}): Prepared {
   const step = opts.onStep ?? (() => {})
+  opts.onProgress?.(5)
   step(`解析路径: ${rawPath}`)
   const dir = toLinuxPath(rawPath)
   if (!existsSync(join(dir, 'package.json'))) throw new Error(`未找到插件目录（缺少 package.json）: ${dir}`)
@@ -251,6 +265,7 @@ export async function prepareTgz(
   const tgzPath = join(work, 'upload.tgz')
   const unpack = join(work, 'pkg')
   mkdirSync(unpack, { recursive: true })
+  opts.onProgress?.(8)
   step(`接收上传包: ${fileName}`)
   try {
     writeFileSync(tgzPath, buffer)
@@ -267,6 +282,7 @@ export async function prepareTgz(
     const dest = join(paths.pluginsDir, name)
     rmSync(dest, { recursive: true, force: true })
     mkdirSync(dirname(dest), { recursive: true })
+    opts.onProgress?.(30)
     step('写入安装目录…')
     cpSync(unpack, dest, { recursive: true })
     prepareDir(dest, opts, step)
@@ -284,6 +300,7 @@ function npmSpecOf(source: string): string {
 
 export async function prepareSource(paths: ResolvedPaths, source: string, opts: InstallOptions = {}): Promise<Prepared> {
   const step = opts.onStep ?? (() => {})
+  opts.onProgress?.(3)
   const raw = source.trim()
   if (!raw || raw.length > MAX_SOURCE_LEN) throw new Error('请输入有效的 GitHub 地址或 npm 包名/安装指令')
   const text = /^(github\.com|gitlab\.com)\//i.test(raw) ? 'https://' + raw : raw
@@ -336,11 +353,13 @@ export async function prepareSource(paths: ResolvedPaths, source: string, opts: 
   const spec = npmSpecOf(text)
   const work = join(tmpdir(), 'plugin-manage-npm-' + Date.now())
   mkdirSync(work, { recursive: true })
+  opts.onProgress?.(8)
   step(`npm pack ${spec} …`)
   try {
     run('npm', ['pack', spec, '--pack-destination', work], work, 300_000)
     const tgz = readdirSync(work).find((f) => /\.tgz$/.test(f))
     if (!tgz) throw new Error(`npm pack 未产出 tgz: ${spec}`)
+    opts.onProgress?.(25)
     step('npm pack 完成，转入解压安装…')
     return await prepareTgz(paths, tgz, readFileSync(join(work, tgz)), opts)
   } catch (error) {
@@ -373,6 +392,7 @@ export async function activatePrepared(
     }
     const entryFile = resolve(dir, pkg.main || 'lib/index.js')
     if (!existsSync(entryFile)) throw new Error(`找不到插件入口: ${entryFile}（package.json main 或 lib/index.js）`)
+    opts.onProgress?.(88)
     step(`检查插件入口: ${pkg.name}`)
     let hasApply = false
     try {
@@ -391,6 +411,7 @@ export async function activatePrepared(
       // Skill-only / 配置层 bundle：不 loader.create 自己的入口，
       // 由 include 在装配 bundles 时应用它的 cordis.patch.yml（重启生效）。
       step(`配置层插件（bundle-only），已写入 bundles，重启后由 include 装配其 patch`, 'warn')
+      opts.onProgress?.(100)
       results.push({
         name: pkg.name,
         entryId: '',
@@ -417,6 +438,7 @@ export async function activatePrepared(
       try { removeBundle(paths.packagePath, pkg.name) } catch {}
       throw new Error(`装配失败（已回滚配置）: ${messageOf(error)}`)
     }
+    opts.onProgress?.(100)
     step(`装配成功: ${pkg.name}`, 'ok')
     results.push({
       name: pkg.name,

@@ -19,6 +19,8 @@ export interface InstallTask {
   kind: InstallKind
   label: string
   status: TaskStatus
+  /** 0-100，按阶段推进；失败停留在失败时进度 */
+  progress: number
   steps: TaskStep[]
   result?: InstallResult[]
   error?: string
@@ -29,6 +31,7 @@ export interface InstallTask {
 
 export interface TaskContext {
   step(text: string, level?: TaskStep['level']): void
+  progress(value: number): void
   /** 激活阶段走串行链：并发任务会在这里排队，避免互相踩 profile 配置 */
   finalize<T>(fn: () => Promise<T>): Promise<T>
 }
@@ -53,6 +56,7 @@ export class InstallQueue {
       kind,
       label,
       status: 'queued',
+      progress: 0,
       steps: [],
       createdAt: Date.now(),
     }
@@ -91,6 +95,9 @@ export class InstallQueue {
     const ctx: TaskContext = {
       step: (text, level = 'info') => {
         task.steps.push({ ts: Date.now(), text, level })
+      },
+      progress: (value: number) => {
+        task.progress = Math.max(0, Math.min(100, Math.round(value)))
       },
       finalize: <T,>(fn: () => Promise<T>): Promise<T> => {
         const next = this.finalizeChain.then(fn, fn)

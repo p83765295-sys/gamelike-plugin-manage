@@ -170,8 +170,9 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
   ): TaskAccepted {
     const task = queue.enqueue(kind, label, async (t) => {
       const onStep = (text: string, level?: 'info' | 'ok' | 'warn') => t.step(text, level)
-      const prepared = await prepare(t, { ...opts, onStep })
-      return t.finalize(() => activatePrepared(ctx, paths, prepared, { onStep }))
+      const onProgress = (value: number) => t.progress(value)
+      const prepared = await prepare(t, { ...opts, onStep, onProgress })
+      return t.finalize(() => activatePrepared(ctx, paths, prepared, { onStep, onProgress }))
     })
     return { taskId: task.id, message: `已加入安装队列 #${task.id}（最多 3 个任务并行，装配阶段自动排队）` }
   }

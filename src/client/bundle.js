@@ -76,7 +76,14 @@ window.__ModuleLoader__.load({
 .pm-feed{display:flex;flex-direction:column;gap:3px;max-height:126px;overflow-y:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3);padding:6px 10px}
 .pm-feed::-webkit-scrollbar{width:8px}
 .pm-feed::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:4px}
-.pm-feed-item{display:flex;align-items:baseline;gap:7px;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:pm-pop .22s ease-out}
+.pm-feed-item{display:flex;flex-direction:column;gap:3px;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);font-family:monospace;animation:pm-pop .22s ease-out}
+.pm-feed-line{display:flex;align-items:baseline;gap:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pm-feed-pct{margin-left:auto;flex:0 0 auto;font-weight:600;color:var(--dsw-alias-label-secondary);font-size:10px}
+.pm-bar-track{height:3px;border-radius:2px;background:var(--dsw-alias-border-l2);overflow:hidden}
+.pm-bar{height:100%;width:0;border-radius:2px;background:var(--dsw-alias-brand-primary);transition:width .25s ease}
+.pm-bar.success{background:#2ecc71}
+.pm-bar.failed{background:var(--dsw-alias-label-error)}
+.pm-bar.queued{background:#f1c40f}
 .pm-feed-item b{font-weight:600;color:var(--dsw-alias-label-secondary);flex:0 0 auto}
 .pm-feed-item.ok{color:#2ecc71}
 .pm-feed-item.warn{color:#f1c40f}
@@ -243,10 +250,23 @@ window.__ModuleLoader__.load({
             key: task.id,
             className: 'pm-feed-item ' + levelOf(task, step),
             children: [
-              jsx('span', { className: 'pm-feed-dot ' + task.status }),
-              jsx('b', { children: '#' + task.id }),
-              jsx('span', { children: clock(step ? step.ts : task.createdAt) }),
-              jsx('span', { children: textOf(task, step) }),
+              jsx('div', {
+                className: 'pm-feed-line',
+                children: [
+                  jsx('span', { className: 'pm-feed-dot ' + task.status }),
+                  jsx('b', { children: '#' + task.id }),
+                  jsx('span', { children: clock(step ? step.ts : task.createdAt) }),
+                  jsx('span', { children: textOf(task, step) }),
+                  jsx('span', { className: 'pm-feed-pct', children: task.progress + '%' }),
+                ],
+              }),
+              jsx('div', {
+                className: 'pm-bar-track',
+                children: jsx('div', {
+                  className: 'pm-bar ' + task.status,
+                  style: { width: task.progress + '%' },
+                }),
+              }),
             ],
           }),
         ),
