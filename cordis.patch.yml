@@ -1,0 +1,7 @@
+# gamelike-plugin-manage：把「插件管理」装配进 loader 树（重启后仍在）。
+# 装配方式：包加入 profile package.json 的 dsh.profile.bundles（本文件随 bundle patch 自动生效）。
+- insert:
+    - id: plugin-manage
+      name: 'gamelike-plugin-manage'
+      config:
+        profile: web
