@@ -203,6 +203,7 @@ window.__ModuleLoader__.load({
       const [dragging, setDragging] = useState(false)
       const [busy, setBusy] = useState(null)
       const [msg, setMsg] = useState(null)
+      const [buildOk, setBuildOk] = useState(false)
 
       const finish = (r, okText) => {
         if (!r || r.ok === false) {
@@ -221,7 +222,7 @@ window.__ModuleLoader__.load({
         }
         setBusy('local')
         setMsg(null)
-        fetchJson('/install-local', { method: 'POST', body: JSON.stringify({ path: dir.trim() }) })
+        fetchJson('/install-local', { method: 'POST', body: JSON.stringify({ path: dir.trim(), allowBuild: buildOk }) })
           .then((r) => finish(r, '安装成功'))
           .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
           .finally(() => setBusy(null))
@@ -234,7 +235,7 @@ window.__ModuleLoader__.load({
         }
         setBusy('source')
         setMsg(null)
-        fetchJson('/install-source', { method: 'POST', body: JSON.stringify({ source: source.trim() }) })
+        fetchJson('/install-source', { method: 'POST', body: JSON.stringify({ source: source.trim(), allowBuild: buildOk }) })
           .then((r) => finish(r, '安装成功'))
           .catch((err) => setMsg({ text: '请求失败: ' + err, isErr: true }))
           .finally(() => setBusy(null))
@@ -250,7 +251,7 @@ window.__ModuleLoader__.load({
         setMsg({ text: '正在上传并安装 ' + file.name + ' …', isErr: false })
         fetch(API + '/install-tgz', {
           method: 'POST',
-          headers: { 'x-file-name': encodeURIComponent(file.name) },
+          headers: { 'x-file-name': encodeURIComponent(file.name), 'x-allow-build': buildOk ? 'true' : 'false' },
           body: file,
         })
           .then((r) => r.json())
@@ -264,6 +265,18 @@ window.__ModuleLoader__.load({
           jsx('p', {
             className: 'pm-intro',
             children: '三种安装方式，任选其一：本地目录 / 拖入 .tgz 压缩包 / GitHub 地址或 npm 指令。安装后立即生效，并写入 profile 持久化（重启仍在）。',
+          }),
+          jsx('label', {
+            className: 'pm-hint',
+            style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' },
+            children: [
+              jsx('input', {
+                type: 'checkbox',
+                checked: buildOk,
+                onChange: (e) => setBuildOk(e.target.checked),
+              }),
+              jsx('span', { children: '允许执行构建脚本（仅对缺少 lib/ 的包生效；会执行该来源的 npm install / 构建脚本，请确认来源可信）' }),
+            ],
           }),
           jsxs('div', {
             className: 'pm-card',

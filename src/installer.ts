@@ -20,6 +20,11 @@ export interface InstallResult {
   message: string
 }
 
+export interface InstallOptions {
+  /** 用户明确授权后，才允许执行 npm install / 构建脚本（默认 false） */
+  allowBuild?: boolean
+}
+
 const MAX_SOURCE_LEN = 500
 const MAX_TGZ_BYTES = 128 * 1024 * 1024
 
@@ -65,9 +70,15 @@ function ensureJunction(paths: ResolvedPaths, name: string, target: string): voi
   symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
 }
 
-/** 目录没有 lib/ 时尝试自动构建（npm install + 构建脚本），失败给出明确原因 */
-function ensureBuilt(dir: string): void {
+/** 目录没有 lib/ 时按授权决定是否构建；默认拒绝（构建 = 执行第三方代码） */
+function ensureBuilt(dir: string, opts: InstallOptions): void {
   if (existsSync(join(dir, 'lib'))) return
+  if (!opts.allowBuild) {
+    throw new Error(
+      '该包尚未构建（缺少 lib/）。自动构建会在本机执行 npm install 与构建脚本，存在代码执行风险；' +
+      '信任该来源的话请勾选「允许执行构建脚本」后重试，或先在本地构建好再安装。',
+    )
+  }
   const pkg = readPkg(dir)
   try {
     run('npm', ['install', '--no-audit', '--no-fund', '--ignore-scripts=false'], dir, 240_000)
@@ -88,12 +99,12 @@ function ensureBuilt(dir: string): void {
   if (!existsSync(join(dir, 'lib'))) throw new Error('构建完成但仍未生成 lib/，请检查构建脚本')
 }
 
-async function installDir(ctx: Context, paths: ResolvedPaths, dir: string): Promise<InstallResult> {
+async function installDir(ctx: Context, paths: ResolvedPaths, dir: string, opts: InstallOptions = {}): Promise<InstallResult> {
   const pkg = readPkg(dir)
   if (isInstalled(paths, pkg.name)) {
     throw new Error(`「${pkg.name}」已在 bundles 中；如需更新请先在 M1 卸载后再安装`)
   }
-  ensureBuilt(dir)
+  ensureBuilt(dir, opts)
   const entryFile = resolve(dir, pkg.main || 'lib/index.js')
   if (!existsSync(entryFile)) throw new Error(`找不到插件入口: ${entryFile}（package.json main 或 lib/index.js）`)
   addBundle(paths.packagePath, pkg.name, 'link:' + dir)
@@ -117,10 +128,10 @@ async function installDir(ctx: Context, paths: ResolvedPaths, dir: string): Prom
 }
 
 /** M2-a：本地目录路径 */
-export async function installLocal(ctx: Context, paths: ResolvedPaths, rawPath: string): Promise<InstallResult> {
+export async function installLocal(ctx: Context, paths: ResolvedPaths, rawPath: string, opts: InstallOptions = {}): Promise<InstallResult> {
   const dir = toLinuxPath(rawPath)
   if (!existsSync(join(dir, 'package.json'))) throw new Error(`未找到插件目录（缺少 package.json）: ${dir}`)
-  return installDir(ctx, paths, dir)
+  return installDir(ctx, paths, dir, opts)
 }
 
 /** M2-b：拖拽上传的 .tgz */
@@ -129,6 +140,7 @@ export async function installTgz(
   paths: ResolvedPaths,
   fileName: string,
   buffer: Buffer,
+  opts: InstallOptions = {},
 ): Promise<InstallResult> {
   if (buffer.length > MAX_TGZ_BYTES) throw new Error('tgz 超过 128MB 限制')
   if (!/\.(tgz|tar\.gz)$/i.test(fileName)) throw new Error('仅支持 .tgz / .tar.gz 压缩包')
@@ -154,10 +166,46 @@ export async function installTgz(
     rmSync(dest, { recursive: true, force: true })
     mkdirSync(dirname(dest), { recursive: true })
     cpSync(unpack, dest, { recursive: true })
-    return installDir(ctx, paths, dest)
+    return installDir(ctx, paths, dest, opts)
   } finally {
     rmSync(work, { recursive: true, force: true })
   }
+}
+
+/** 声明式套装识别：只认标准文件，绝不执行 install.ps1 / *.sh / git hooks */
+export function detectSuite(root: string): { plugins: string[]; presets: string[] } {
+  const plugins: string[] = []
+  const presets: string[] = []
+  const seen = new Set<string>()
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4 || seen.has(dir)) return
+    seen.add(dir)
+    let entries: string[] = []
+    try { entries = readdirSync(dir) } catch { return }
+    const hasPackage = existsSync(join(dir, 'package.json'))
+    const hasPreset = existsSync(join(dir, 'preset.yml')) && existsSync(join(dir, 'agent.cordis.yml'))
+    if (hasPreset) presets.push(dir)
+    if (hasPackage) {
+      plugins.push(dir)
+      return // 插件目录不再深入（node_modules 等内部结构与本仓库安装无关）
+    }
+    for (const name of entries) {
+      if (name === 'node_modules' || name === '.git' || name === 'dist') continue
+      const child = join(dir, name)
+      try { if (lstatSync(child).isDirectory()) walk(child, depth + 1) } catch { /* ignore */ }
+    }
+  }
+  walk(root, 0)
+  return { plugins, presets }
+}
+
+/** 复制一个声明式预设目录到 ~/.dsh/.agent-presets/<basename>；已存在则跳过（不覆盖用户数据） */
+function copyPreset(paths: ResolvedPaths, src: string): string {
+  const id = basename(src)
+  const dest = join(paths.home, '.agent-presets', id)
+  if (existsSync(dest)) return `预设已存在，跳过: ${id}`
+  cpSync(src, dest, { recursive: true })
+  return `已安装预设: ${id} → ${dest}`
 }
 
 /** 提取 "npm install pkg" / "npm i pkg@1" 中的包说明符 */
@@ -167,7 +215,7 @@ function npmSpecOf(source: string): string {
 }
 
 /** M2-c/d：GitHub 地址或 npm 指令（自动识别） */
-export async function installSource(ctx: Context, paths: ResolvedPaths, source: string): Promise<InstallResult> {
+export async function installSource(ctx: Context, paths: ResolvedPaths, source: string, opts: InstallOptions = {}): Promise<InstallResult> {
   const raw = source.trim()
   if (!raw || raw.length > MAX_SOURCE_LEN) throw new Error('请输入有效的 GitHub 地址或 npm 包名/安装指令')
   // 用户常省略协议直接写 github.com/user/repo → 补全
@@ -181,7 +229,32 @@ export async function installSource(ctx: Context, paths: ResolvedPaths, source: 
     mkdirSync(dirname(target), { recursive: true })
     try {
       run('git', ['clone', '--depth', '1', '--recurse-submodules', text, target], dirname(target), 300_000)
-      return await installDir(ctx, paths, target)
+      // 顶层是标准插件包 → 直接装；否则按声明式白名单识别套装（不执行任何脚本）
+      if (existsSync(join(target, 'package.json'))) {
+        return await installDir(ctx, paths, target, opts)
+      }
+      const suite = detectSuite(target)
+      if (!suite.plugins.length && !suite.presets.length) {
+        throw new Error('该仓库既不是插件包（顶层 package.json）也不是可识别的套装（package.json 或 preset.yml+agent.cordis.yml 子目录）')
+      }
+      const notes: string[] = []
+      for (const pluginDir of suite.plugins) {
+        try {
+          const result = await installDir(ctx, paths, pluginDir, opts)
+          notes.push(result.message)
+        } catch (error) {
+          notes.push(`跳过 ${pluginDir}: ${messageOf(error)}`)
+        }
+      }
+      for (const presetDir of suite.presets) {
+        try { notes.push(copyPreset(paths, presetDir)) } catch (error) { notes.push(`预设复制失败 ${presetDir}: ${messageOf(error)}`) }
+      }
+      return {
+        name: 'suite:' + slug,
+        entryId: '',
+        dir: target,
+        message: `套装识别完成（未执行任何仓库自带脚本）：\n` + notes.join('\n'),
+      }
     } catch (error) {
       // clone / 装配失败：清掉本次 clone 的残留目录，避免留下半成品
       rmSync(target, { recursive: true, force: true })
@@ -197,7 +270,7 @@ export async function installSource(ctx: Context, paths: ResolvedPaths, source: 
     run('npm', ['pack', spec, '--pack-destination', work], work, 300_000)
     const tgz = readdirSync(work).find((f) => /\.tgz$/.test(f))
     if (!tgz) throw new Error(`npm pack 未产出 tgz: ${spec}`)
-    return await installTgz(ctx, paths, tgz, readFileSync(join(work, tgz)))
+    return await installTgz(ctx, paths, tgz, readFileSync(join(work, tgz)), opts)
   } catch (error) {
     throw new Error(`npm 安装失败: ${messageOf(error)}`)
   } finally {

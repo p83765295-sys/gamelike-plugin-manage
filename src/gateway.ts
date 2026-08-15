@@ -84,24 +84,25 @@ export function registerGateway(ctx: Context, svc: PluginManageService, log?: Lo
           if (req.method === 'POST' && path === '/install-local') {
             const text = (await readBody(req)).trim()
             if (!text) return send(res, 400, { ok: false, error: '缺少路径' })
-            const body = JSON.parse(text) as { path?: unknown }
+            const body = JSON.parse(text) as { path?: unknown; allowBuild?: unknown }
             const dir = String(body?.path ?? '').trim()
             if (!dir) return send(res, 400, { ok: false, error: 'path 必填' })
-            return send(res, 200, { ok: true, result: await svc.installLocal(dir) })
+            return send(res, 200, { ok: true, result: await svc.installLocal(dir, { allowBuild: body.allowBuild === true }) })
           }
           if (req.method === 'POST' && path === '/install-tgz') {
             const fileName = String(req.headers['x-file-name'] ?? 'plugin.tgz').trim()
+            const allowBuild = String(req.headers['x-allow-build'] ?? '') === 'true'
             const buffer = await readBodyBuffer(req)
             if (!buffer.length) return send(res, 400, { ok: false, error: '缺少文件内容' })
-            return send(res, 200, { ok: true, result: await svc.installTgz(fileName, buffer) })
+            return send(res, 200, { ok: true, result: await svc.installTgz(fileName, buffer, { allowBuild }) })
           }
           if (req.method === 'POST' && path === '/install-source') {
             const text = (await readBody(req)).trim()
             if (!text) return send(res, 400, { ok: false, error: '缺少地址或指令' })
-            const body = JSON.parse(text) as { source?: unknown }
+            const body = JSON.parse(text) as { source?: unknown; allowBuild?: unknown }
             const source = String(body?.source ?? '').trim()
             if (!source) return send(res, 400, { ok: false, error: 'source 必填' })
-            return send(res, 200, { ok: true, result: await svc.installSource(source) })
+            return send(res, 200, { ok: true, result: await svc.installSource(source, { allowBuild: body.allowBuild === true }) })
           }
           return send(res, 404, { ok: false, error: 'not found: ' + path })
         } catch (error) {

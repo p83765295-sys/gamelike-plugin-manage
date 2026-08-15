@@ -5,7 +5,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
-import { installLocal, installSource, installTgz, type InstallResult } from './installer.js'
+import { installLocal, installSource, installTgz, type InstallOptions, type InstallResult } from './installer.js'
 import {
   messageOf,
   pendingOf,
@@ -32,11 +32,11 @@ export interface PluginManageService {
   /** 重启后应用 pending：把待重启操作真正写入 profile 配置 */
   applyPending(): Promise<void>
   /** M2 插件安装：本地目录路径（支持 Windows / WSL 路径） */
-  installLocal(path: string): Promise<InstallResult>
+  installLocal(path: string, opts?: InstallOptions): Promise<InstallResult>
   /** M2 插件安装：上传的 .tgz 内容 */
-  installTgz(fileName: string, buffer: Buffer): Promise<InstallResult>
+  installTgz(fileName: string, buffer: Buffer, opts?: InstallOptions): Promise<InstallResult>
   /** M2 插件安装：GitHub 地址或 npm 包名/安装指令 */
-  installSource(source: string): Promise<InstallResult>
+  installSource(source: string, opts?: InstallOptions): Promise<InstallResult>
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -201,11 +201,11 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       }
     },
 
-    installLocal: (path: string) => installLocal(ctx, paths, path),
+    installLocal: (path: string, opts?: InstallOptions) => installLocal(ctx, paths, path, opts),
 
-    installTgz: (fileName: string, buffer: Buffer) => installTgz(ctx, paths, fileName, buffer),
+    installTgz: (fileName: string, buffer: Buffer, opts?: InstallOptions) => installTgz(ctx, paths, fileName, buffer, opts),
 
-    installSource: (source: string) => installSource(ctx, paths, source),
+    installSource: (source: string, opts?: InstallOptions) => installSource(ctx, paths, source, opts),
 
     async applyPending(): Promise<void> {
       const pending = readPending(paths.pendingPath)
