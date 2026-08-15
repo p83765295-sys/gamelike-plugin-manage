@@ -73,6 +73,29 @@ window.__ModuleLoader__.load({
 .pm-drop{border:1.5px dashed var(--dsw-alias-border-l2);border-radius:12px;padding:22px 12px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;transition:border-color .15s,color .15s,background .15s;cursor:pointer}
 .pm-drop.on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-3)}
 .pm-drop b{display:block;font-size:14px;margin-bottom:4px;font-weight:600}
+.pm-tasks{display:flex;flex-direction:column;gap:8px}
+.pm-tasks-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin:6px 0 0;text-transform:uppercase;letter-spacing:.04em}
+.pm-task{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;transition:border-color .15s,background .15s}
+.pm-task.running{border-color:var(--dsw-alias-brand-primary)}
+.pm-task.failed{border-color:var(--dsw-alias-label-error)}
+.pm-task-head{display:flex;align-items:center;gap:8px}
+.pm-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:var(--dsw-alias-label-tertiary)}
+.pm-dot.queued{background:#f1c40f}
+.pm-dot.running{background:var(--dsw-alias-brand-primary);animation:pm-pulse 1s infinite alternate}
+.pm-dot.success{background:#2ecc71}
+.pm-dot.failed{background:var(--dsw-alias-label-error)}
+@keyframes pm-pulse{from{opacity:.35}to{opacity:1}}
+.pm-task-label{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-task-status{font-size:11px;font-weight:500;border-radius:999px;padding:1px 8px;line-height:17px;white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}
+.pm-task-status.queued{color:#f1c40f}
+.pm-task-status.running{color:#4da3ff}
+.pm-task-status.success{color:#2ecc71}
+.pm-task-status.failed{color:var(--dsw-alias-label-error)}
+.pm-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.pm-step{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-step.ok{color:#2ecc71}
+.pm-step.warn{color:#f1c40f}
+.pm-step.error{color:var(--dsw-alias-label-error)}
 `
 
     function fetchJson(path, init) {
@@ -197,6 +220,50 @@ window.__ModuleLoader__.load({
     }
 
 
+
+    function TaskCard({ task }) {
+      const statusText = { queued: '排队中', running: '安装中', success: '已完成', failed: '失败' }[task.status] || task.status
+      const steps = task.steps.slice(-4)
+      const clock = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
+      return jsxs('div', {
+        className: 'pm-task ' + task.status,
+        children: [
+          jsx('div', {
+            className: 'pm-task-head',
+            children: [
+              jsx('span', { className: 'pm-dot ' + task.status }),
+              jsx('span', { className: 'pm-task-label', children: '#' + task.id + ' · ' + task.label }),
+              jsx('span', { className: 'pm-task-status ' + task.status, children: statusText }),
+            ],
+          }),
+          steps.length
+            ? jsx('ul', {
+                className: 'pm-steps',
+                children: steps.map((st, i) =>
+                  jsx('li', { key: i, className: 'pm-step ' + st.level, children: clock(st.ts) + '  ' + st.text }),
+                ),
+              })
+            : null,
+        ],
+      })
+    }
+
+    function TasksPanel({ tasks }) {
+      const active = tasks.filter((t) => t.status === 'queued' || t.status === 'running')
+      const done = tasks.filter((t) => t.status === 'success' || t.status === 'failed').slice(0, 4)
+      if (!tasks.length) return null
+      return jsxs('div', {
+        className: 'pm-tasks',
+        children: [
+          active.length ? jsx('p', { className: 'pm-tasks-title', children: '进行中 · ' + active.length + ' 个（最多 3 个并行）' }) : null,
+          ...active.map((t) => jsx(TaskCard, { key: t.id, task: t })),
+          done.length ? jsx('p', { className: 'pm-tasks-title', children: '最近完成' }) : null,
+          ...done.map((t) => jsx(TaskCard, { key: t.id, task: t })),
+        ],
+      })
+    }
+
+
     function InstallTab({ onRefresh }) {
       const [dir, setDir] = useState('')
       const [source, setSource] = useState('')
@@ -204,13 +271,29 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(null)
       const [msg, setMsg] = useState(null)
       const [buildOk, setBuildOk] = useState(false)
+      const [tasks, setTasks] = useState([])
+
+      const pollTasks = useCallback(() => {
+        fetchJson('/install-tasks')
+          .then((r) => {
+            if (r && r.ok !== false) setTasks(r.tasks || [])
+          })
+          .catch(() => {})
+      }, [])
+
+      useEffect(() => {
+        pollTasks()
+        const timer = window.setInterval(pollTasks, 800)
+        return () => window.clearInterval(timer)
+      }, [pollTasks])
 
       const finish = (r, okText) => {
         if (!r || r.ok === false) {
-          setMsg({ text: (r && r.error) || '安装失败', isErr: true })
+          setMsg({ text: (r && r.error) || '提交失败', isErr: true })
           return false
         }
         setMsg({ text: (r.result && r.result.message) || okText, isErr: false })
+        pollTasks()
         if (onRefresh) onRefresh()
         return true
       }
@@ -278,6 +361,7 @@ window.__ModuleLoader__.load({
               jsx('span', { children: '允许执行构建脚本（仅对缺少 lib/ 的包生效；会执行该来源的 npm install / 构建脚本，请确认来源可信）' }),
             ],
           }),
+          jsx(TasksPanel, { tasks }),
           jsxs('div', {
             className: 'pm-card',
             children: [

@@ -1,11 +1,20 @@
 /**
- * 插件管理服务：只读运行树 + 读/写 profile 持久层。
+ * 插件管理服务：只读运行树 + 读/写 profile 持久层 + M2 安装队列。
  * 所有变更操作只写配置文件与 pending 记录，当前进程的 loader 树保持不动。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
-import { installLocal, installSource, installTgz, type InstallOptions, type InstallResult } from './installer.js'
+import {
+  activatePrepared,
+  prepareLocal,
+  prepareSource,
+  prepareTgz,
+  type InstallOptions,
+  type InstallResult,
+  type Prepared,
+} from './installer.js'
+import { InstallQueue, type InstallTask, type TaskContext } from './tasks.js'
 import {
   messageOf,
   pendingOf,
@@ -22,6 +31,11 @@ import {
 } from './profile.js'
 import type { ActionOk, DesiredState, PluginItem, PluginManageSnapshot, PluginSource } from './types.js'
 
+export interface TaskAccepted {
+  taskId: number
+  message: string
+}
+
 export interface PluginManageService {
   list(): PluginManageSnapshot
   disable(id: string): Promise<ActionOk>
@@ -31,12 +45,11 @@ export interface PluginManageService {
   cancelUninstall(id: string): Promise<ActionOk>
   /** 重启后应用 pending：把待重启操作真正写入 profile 配置 */
   applyPending(): Promise<void>
-  /** M2 插件安装：本地目录路径（支持 Windows / WSL 路径） */
-  installLocal(path: string, opts?: InstallOptions): Promise<InstallResult>
-  /** M2 插件安装：上传的 .tgz 内容 */
-  installTgz(fileName: string, buffer: Buffer, opts?: InstallOptions): Promise<InstallResult>
-  /** M2 插件安装：GitHub 地址或 npm 包名/安装指令 */
-  installSource(source: string, opts?: InstallOptions): Promise<InstallResult>
+  /** M2 安装队列：提交后立即返回任务号 */
+  installLocal(path: string, opts?: InstallOptions): TaskAccepted
+  installTgz(fileName: string, buffer: Buffer, opts?: InstallOptions): TaskAccepted
+  installSource(source: string, opts?: InstallOptions): TaskAccepted
+  listTasks(): InstallTask[]
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -57,12 +70,9 @@ const FIBER_PHASE: Record<number, string | null> = {
 
 function classify(id: string, name: string, bundles: ProfileBundle[], patchIds: Set<string>): PluginSource {
   const patchId = patchIdOf(id)
-  // 原生包名前缀优先：profile bundles 里的 @deepseek-ai/dsh-base / dsh-web-app 是原生底座，
-  // 其展开行（include:web-runtime 等）不能因为「bundles 列表里有它」被判成用户插件。
   if (name.startsWith('@deepseek-ai/') || name.startsWith('node:') || name.startsWith('cordis:')) return 'native'
   if (patchIds.has(patchId) || patchIds.has(id)) return 'user'
   if (bundles.some((bundle) => bundle.name === name || bundle.name === id || bundle.name === patchId)) return 'user'
-  // 裸包名 / 绝对路径 / @dsh-external 等，未登记在持久层 → 临时注入
   return 'injected'
 }
 
@@ -77,6 +87,7 @@ function bundleOf(name: string, bundles: ProfileBundle[]): ProfileBundle | undef
 
 export function createService(ctx: Context, paths: ResolvedPaths): PluginManageService {
   const loader: Loader = ctx.loader
+  const queue = new InstallQueue()
 
   function runningById(): Map<string, { enabled: boolean }> {
     const map = new Map<string, { enabled: boolean }>()
@@ -91,8 +102,6 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
     const bundles = readUserBundles(paths.packagePath)
     const patchIds = readPatchInsertIds(paths.patchPath)
     let pending = readPending(paths.pendingPath)
-
-    // 先清掉重启后已经生效的历史 pending
     const runningMap = runningById()
     pending = prunePending(paths.pendingPath, pending, new Map([...runningMap].map(([id, v]) => [id, v.enabled])))
 
@@ -153,6 +162,20 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
     return { name: entry.options.name, source, patchId: patchIdOf(id) }
   }
 
+  function enqueue(
+    kind: 'local' | 'tgz' | 'source',
+    label: string,
+    opts: InstallOptions,
+    prepare: (t: TaskContext, o: InstallOptions) => Prepared | Promise<Prepared>,
+  ): TaskAccepted {
+    const task = queue.enqueue(kind, label, async (t) => {
+      const onStep = (text: string, level?: 'info' | 'ok' | 'warn') => t.step(text, level)
+      const prepared = await prepare(t, { ...opts, onStep })
+      return t.finalize(() => activatePrepared(ctx, paths, prepared, { onStep }))
+    })
+    return { taskId: task.id, message: `已加入安装队列 #${task.id}（最多 3 个任务并行，装配阶段自动排队）` }
+  }
+
   return {
     list,
 
@@ -201,19 +224,13 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       }
     },
 
-    installLocal: (path: string, opts?: InstallOptions) => installLocal(ctx, paths, path, opts),
-
-    installTgz: (fileName: string, buffer: Buffer, opts?: InstallOptions) => installTgz(ctx, paths, fileName, buffer, opts),
-
-    installSource: (source: string, opts?: InstallOptions) => installSource(ctx, paths, source, opts),
-
     async applyPending(): Promise<void> {
       const pending = readPending(paths.pendingPath)
       if (!pending.length) return
       for (const change of pending) {
         try {
           const entry = [...loader.entries()].find((e) => !e.options.group && e.id === change.id)
-          if (!entry) continue // 该行已不在运行树（例如上次重启已卸载）→ 交给 prune 清理
+          if (!entry) continue
           const patchId = patchIdOf(change.id)
           const name = entry.options.name
           const bundles = readUserBundles(paths.packagePath)
@@ -224,7 +241,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
           } else if (change.op === 'enable') {
             writePatchDisabled(paths.patchPath, patchId, false)
           } else if (change.op === 'uninstall') {
-            if (source === 'native') continue // 边界：重启后来源变化，跳过危险卸载
+            if (source === 'native') continue
             let done = false
             const bundle = bundleOf(name, bundles)
             if (bundle) {
@@ -234,9 +251,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
             if (patchIds.has(patchId) || patchIds.has(change.id)) {
               done = removePatchInsert(paths.patchPath, patchId) || removePatchInsert(paths.patchPath, change.id) || done
             }
-            if (!done) {
-              throw new Error(`pending uninstall ${change.id}: 无法定位持久装配记录`)
-            }
+            if (!done) throw new Error(`pending uninstall ${change.id}: 无法定位持久装配记录`)
           }
         } catch (error) {
           ;(ctx as unknown as { logger?: (name: string) => { error?(msg: string): void } })
@@ -244,6 +259,17 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
         }
       }
     },
+
+    installLocal: (path: string, opts: InstallOptions = {}) =>
+      enqueue('local', `本地目录 ${path}`, opts, (t, o) => Promise.resolve(prepareLocal(paths, path, o))),
+
+    installTgz: (fileName: string, buffer: Buffer, opts: InstallOptions = {}) =>
+      enqueue('tgz', `上传包 ${fileName}`, opts, (t, o) => prepareTgz(paths, fileName, buffer, o)),
+
+    installSource: (source: string, opts: InstallOptions = {}) =>
+      enqueue('source', source, opts, (t, o) => prepareSource(paths, source, o)),
+
+    listTasks: () => queue.snapshot(),
   }
 }
 

@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
@@ -22,6 +22,8 @@ export interface ResolvedPaths {
   packagePath: string
   patchPath: string
   pendingPath: string
+  /** M2 解包/克隆根：必须在 .dsh 之外（DSH loader 对 .dsh 路径的依赖解析有限制） */
+  pluginsDir: string
 }
 
 export function resolvePaths(config: Config): ResolvedPaths {
@@ -34,5 +36,6 @@ export function resolvePaths(config: Config): ResolvedPaths {
     packagePath: join(profileDir, 'package.json'),
     patchPath: join(profileDir, 'cordis.patch.yml'),
     pendingPath: join(home, 'plugin-manage.pending.json'),
+    pluginsDir: join(dirname(home), 'dsh-plugins'),
   }
 }
