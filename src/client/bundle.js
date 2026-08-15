@@ -11,7 +11,7 @@ window.__ModuleLoader__.load({
     const exports = module.exports
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
-    const { useState, useCallback, useEffect } = React
+    const { useState, useCallback, useEffect, useRef } = React
     const { jsx, jsxs } = require('react/jsx-runtime')
 
     const inject = ['slots']
@@ -248,14 +248,24 @@ window.__ModuleLoader__.load({
 
       const clock = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
       const textOf = (task, step) => {
-        if (task.status === 'success') return step ? step.text : '完成'
+        if (task.status === 'success') {
+          const names = (task.result || []).map((r) => r.name).filter(Boolean).join(', ')
+          return names ? '安装成功 · ' + names : '安装成功'
+        }
         if (task.status === 'queued') return '排队中 · ' + task.label
         return step ? step.text : '准备中…'
       }
       const levelOf = (task, step) => {
-        if (task.status === 'success') return 'ok'
         if (step && step.level !== 'info') return step.level
+        if (task.status === 'success') return 'ok'
         return ''
+      }
+
+      /** 行整体色调：warn/error 步骤优先于任务状态（跳过=黄，失败=红，成功=绿） */
+      const toneOf = (task, step) => {
+        if (step && step.level === 'error') return 'failed'
+        if (step && step.level === 'warn') return 'queued'
+        return task.status
       }
 
       const feed = rows.length
@@ -269,7 +279,7 @@ window.__ModuleLoader__.load({
                   jsx('div', {
                     className: 'pm-feed-line',
                     children: [
-                      jsx('span', { className: 'pm-feed-dot ' + task.status }),
+                      jsx('span', { className: 'pm-feed-dot ' + toneOf(task, step) }),
                       jsx('b', { children: '#' + task.id }),
                       jsx('span', { children: clock(step ? step.ts : task.createdAt) }),
                       jsx('span', { className: 'pm-feed-text', children: textOf(task, step) }),
@@ -279,7 +289,7 @@ window.__ModuleLoader__.load({
                   jsx('div', {
                     className: 'pm-bar-track',
                     children: jsx('div', {
-                      className: 'pm-bar ' + task.status,
+                      className: 'pm-bar ' + toneOf(task, step),
                       style: { width: task.progress + '%' },
                     }),
                   }),
@@ -311,11 +321,26 @@ window.__ModuleLoader__.load({
       const [msg, setMsg] = useState(null)
       const [buildOk, setBuildOk] = useState(false)
       const [tasks, setTasks] = useState([])
+      const notifiedRef = useRef(new Set())
 
       const pollTasks = useCallback(() => {
         fetchJson('/install-tasks')
           .then((r) => {
-            if (r && r.ok !== false) setTasks(r.tasks || [])
+            if (!r || r.ok === false) return
+            const list = r.tasks || []
+            setTasks(list)
+            const now = Date.now()
+            for (const task of list) {
+              if (notifiedRef.current.has(task.id)) continue
+              if (task.status === 'success' && now - (task.finishedAt || 0) < 3000) {
+                notifiedRef.current.add(task.id)
+                const names = (task.result || []).map((x) => x.name).filter(Boolean).join(', ')
+                setMsg({ text: names ? '安装成功：' + names : '安装成功', isErr: false })
+              } else if (task.status === 'failed' && now - (task.finishedAt || 0) < 3000) {
+                notifiedRef.current.add(task.id)
+                setMsg({ text: '安装失败：#' + task.id + '（完整原因见下方红色面板）', isErr: true })
+              }
+            }
           })
           .catch(() => {})
       }, [])
@@ -548,8 +573,10 @@ window.__ModuleLoader__.load({
             value: search,
             onChange: (e) => setSearch(e.target.value),
           }),
-          items.length === 0
-            ? jsx('p', { className: 'pm-empty', children: '（没有读取到任何插件）' })
+          data === null
+            ? jsx('p', { className: 'pm-empty', children: '加载中…' })
+            : items.length === 0
+              ? jsx('p', { className: 'pm-empty', children: '（没有读取到任何插件）' })
             : jsxs('div', {
                 children: [
                   group('native', '原生', nativeAll, nativeItems),
