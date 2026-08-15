@@ -168,8 +168,10 @@ function npmSpecOf(source: string): string {
 
 /** M2-c/d：GitHub 地址或 npm 指令（自动识别） */
 export async function installSource(ctx: Context, paths: ResolvedPaths, source: string): Promise<InstallResult> {
-  const text = source.trim()
-  if (!text || text.length > MAX_SOURCE_LEN) throw new Error('请输入有效的 GitHub 地址或 npm 包名/安装指令')
+  const raw = source.trim()
+  if (!raw || raw.length > MAX_SOURCE_LEN) throw new Error('请输入有效的 GitHub 地址或 npm 包名/安装指令')
+  // 用户常省略协议直接写 github.com/user/repo → 补全
+  const text = /^(github\.com|gitlab\.com)\//i.test(raw) ? 'https://' + raw : raw
   const isUrl = /^(https?:\/\/|git@)/i.test(text)
 
   if (isUrl) {
@@ -177,11 +179,17 @@ export async function installSource(ctx: Context, paths: ResolvedPaths, source: 
     const target = join(paths.home, 'extensions', slug)
     if (existsSync(target)) throw new Error(`目录已存在: ${target}（请先删除或换一个仓库）`)
     mkdirSync(dirname(target), { recursive: true })
-    run('git', ['clone', '--depth', '1', text, target], dirname(target), 300_000)
-    return installDir(ctx, paths, target)
+    try {
+      run('git', ['clone', '--depth', '1', '--recurse-submodules', text, target], dirname(target), 300_000)
+      return await installDir(ctx, paths, target)
+    } catch (error) {
+      // clone / 装配失败：清掉本次 clone 的残留目录，避免留下半成品
+      rmSync(target, { recursive: true, force: true })
+      throw new Error(`GitHub 安装失败（已清理残留）: ${messageOf(error)}`)
+    }
   }
 
-  // npm 包名 / 安装指令 → npm pack 成 tgz → 走 tgz 流程
+  // npm 包名 / 安装指令 / 本地目录 → npm pack 成 tgz → 走 tgz 流程
   const spec = npmSpecOf(text)
   const work = join(tmpdir(), 'plugin-manage-npm-' + Date.now())
   mkdirSync(work, { recursive: true })
@@ -189,7 +197,9 @@ export async function installSource(ctx: Context, paths: ResolvedPaths, source: 
     run('npm', ['pack', spec, '--pack-destination', work], work, 300_000)
     const tgz = readdirSync(work).find((f) => /\.tgz$/.test(f))
     if (!tgz) throw new Error(`npm pack 未产出 tgz: ${spec}`)
-    return installTgz(ctx, paths, tgz, readFileSync(join(work, tgz)))
+    return await installTgz(ctx, paths, tgz, readFileSync(join(work, tgz)))
+  } catch (error) {
+    throw new Error(`npm 安装失败: ${messageOf(error)}`)
   } finally {
     rmSync(work, { recursive: true, force: true })
   }
