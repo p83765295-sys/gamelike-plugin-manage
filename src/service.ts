@@ -169,7 +169,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
     prepare: (t: TaskContext, o: InstallOptions) => Prepared | Promise<Prepared>,
   ): TaskAccepted {
     const task = queue.enqueue(kind, label, async (t) => {
-      const onStep = (text: string, level?: 'info' | 'ok' | 'warn') => t.step(text, level)
+      const onStep = (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => t.step(text, level)
       const onProgress = (value: number) => t.progress(value)
       const prepared = await prepare(t, { ...opts, onStep, onProgress })
       return t.finalize(() => activatePrepared(ctx, paths, prepared, { onStep, onProgress }))

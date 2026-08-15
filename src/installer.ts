@@ -17,7 +17,7 @@ import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
 import { addBundle, messageOf, readUserBundles } from './profile.js'
 
-export type StepFn = (text: string, level?: 'info' | 'ok' | 'warn') => void
+export type StepFn = (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => void
 
 export interface InstallResult {
   name: string
@@ -42,8 +42,8 @@ export interface Prepared {
   plugins: string[]
   /** 待复制的预设目录 */
   presets: string[]
-  /** 准备阶段已经给出的提示（已装/跳过等） */
-  notes: string[]
+  /** 准备阶段已经给出的提示（已装/跳过等；level=error 会以红色显示） */
+  notes: { text: string; level: 'info' | 'ok' | 'warn' | 'error' }[]
 }
 
 const MAX_SOURCE_LEN = 500
@@ -78,6 +78,8 @@ function readPkg(dir: string): {
   scripts?: Record<string, string>
   devDependencies?: Record<string, string>
   bundlePatch?: string
+  /** 是否声明了 dsh.bundle 或 dsh.client（真正的 DSH 插件包） */
+  isDshPackage?: boolean
 } {
   const path = join(dir, 'package.json')
   if (!existsSync(path)) throw new Error(`目录中没有 package.json: ${dir}`)
@@ -86,7 +88,7 @@ function readPkg(dir: string): {
     main?: unknown
     scripts?: Record<string, string>
     devDependencies?: Record<string, string>
-    dsh?: { bundle?: { patch?: unknown } }
+    dsh?: { bundle?: { patch?: unknown }; client?: unknown }
   }
   const name = typeof pkg.name === 'string' ? pkg.name.trim() : ''
   if (!name) throw new Error(`package.json 缺少 name: ${path}`)
@@ -97,6 +99,7 @@ function readPkg(dir: string): {
     scripts: pkg.scripts,
     devDependencies: pkg.devDependencies,
     bundlePatch: typeof patch === 'string' ? patch : undefined,
+    isDshPackage: !!(pkg.dsh && (pkg.dsh.bundle || pkg.dsh.client)),
   }
 }
 
@@ -331,15 +334,20 @@ export async function prepareSource(paths: ResolvedPaths, source: string, opts: 
       if (!suite.plugins.length && !suite.presets.length) {
         throw new Error('该仓库既不是插件包（顶层 package.json）也不是可识别的套装（package.json 或 preset.yml+agent.cordis.yml 子目录）')
       }
-      step(`识别为套装：${suite.plugins.length} 个插件目录，${suite.presets.length} 个预设目录`)
-      const notes: string[] = []
+      step(`识别为套装：${suite.plugins.length} 个 package.json 目录，${suite.presets.length} 个预设目录`)
+      const notes: Prepared['notes'] = []
       const preparedPlugins: string[] = []
       for (const pluginDir of suite.plugins) {
         try {
+          const info = readPkg(pluginDir)
+          if (!info.isDshPackage) {
+            notes.push({ text: `跳过非 DSH 插件目录（无 dsh.bundle / dsh.client，不构建）: ${pluginDir}`, level: 'warn' })
+            continue
+          }
           prepareDir(pluginDir, opts, step)
           preparedPlugins.push(pluginDir)
         } catch (error) {
-          notes.push(`跳过 ${pluginDir}: ${messageOf(error)}`)
+          notes.push({ text: `插件目录准备失败: ${pluginDir}: ${messageOf(error)}`, level: 'error' })
         }
       }
       return { kind: 'suite', name: 'suite:' + slug, dir: target, plugins: preparedPlugins, presets: suite.presets, notes }
@@ -450,7 +458,7 @@ export async function activatePrepared(
   for (const presetDir of prepared.presets) {
     step(copyPreset(paths, presetDir), 'ok')
   }
-  for (const note of prepared.notes) step(note, 'warn')
+  for (const note of prepared.notes) step(note.text, note.level)
   return results
 }
 

@@ -78,6 +78,12 @@ window.__ModuleLoader__.load({
 .pm-feed::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:4px}
 .pm-feed-item{display:flex;flex-direction:column;gap:3px;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);font-family:monospace;animation:pm-pop .22s ease-out}
 .pm-feed-line{display:flex;align-items:baseline;gap:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pm-feed-item.error .pm-feed-line{white-space:normal;overflow:visible;flex-wrap:wrap;align-items:flex-start}
+.pm-error-full{border:1px solid var(--dsw-alias-label-error);background:var(--dsw-alias-bg-layer-2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.pm-error-full b{font-size:12px;color:var(--dsw-alias-label-error);font-weight:600}
+.pm-error-full pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:monospace;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-primary)}
+.pm-feed-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pm-feed-item.error .pm-feed-text{white-space:pre-wrap;word-break:break-all;overflow:visible;flex:1 1 100%}
 .pm-feed-pct{margin-left:auto;flex:0 0 auto;font-weight:600;color:var(--dsw-alias-label-secondary);font-size:10px}
 .pm-bar-track{height:3px;border-radius:2px;background:var(--dsw-alias-border-l2);overflow:hidden}
 .pm-bar{height:100%;width:0;border-radius:2px;background:var(--dsw-alias-brand-primary);transition:width .25s ease}
@@ -220,14 +226,18 @@ window.__ModuleLoader__.load({
 
 
 
-    /** 紧凑实时信息流：每个任务只显示最新一步，新事件从顶部弹入 */
+    /** 紧凑实时信息流（只放进行中/刚完成）；失败任务用下方完整错误面板显示 */
     function TasksPanel({ tasks }) {
       const now = Date.now()
       const visible = tasks.filter((task) => {
         if (task.status === 'queued' || task.status === 'running') return true
         const age = now - (task.finishedAt || 0)
-        return task.status === 'failed' ? age < 30000 : age < 8000
+        return task.status === 'success' && age < 8000
       })
+      const failed = tasks
+        .filter((task) => task.status === 'failed' && now - (task.finishedAt || 0) < 300000)
+        .sort((a, b) => b.finishedAt - a.finishedAt)
+
       const rows = visible
         .map((task) => ({ task, step: task.steps[task.steps.length - 1] }))
         .sort((a, b) => {
@@ -235,48 +245,62 @@ window.__ModuleLoader__.load({
           return ts(b) - ts(a)
         })
         .slice(0, 8)
-      if (!rows.length) return null
+
       const clock = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
       const textOf = (task, step) => {
-        if (task.status === 'failed') return (task.error || '失败').slice(0, 72)
         if (task.status === 'success') return step ? step.text : '完成'
         if (task.status === 'queued') return '排队中 · ' + task.label
         return step ? step.text : '准备中…'
       }
       const levelOf = (task, step) => {
-        if (task.status === 'failed') return 'error'
         if (task.status === 'success') return 'ok'
         if (step && step.level !== 'info') return step.level
         return ''
       }
-      return jsx('div', {
-        className: 'pm-feed',
-        children: rows.map(({ task, step }) =>
-          jsx('div', {
-            key: task.id,
-            className: 'pm-feed-item ' + levelOf(task, step),
-            children: [
+
+      const feed = rows.length
+        ? jsx('div', {
+            className: 'pm-feed',
+            children: rows.map(({ task, step }) =>
               jsx('div', {
-                className: 'pm-feed-line',
+                key: task.id,
+                className: 'pm-feed-item ' + levelOf(task, step),
                 children: [
-                  jsx('span', { className: 'pm-feed-dot ' + task.status }),
-                  jsx('b', { children: '#' + task.id }),
-                  jsx('span', { children: clock(step ? step.ts : task.createdAt) }),
-                  jsx('span', { children: textOf(task, step) }),
-                  jsx('span', { className: 'pm-feed-pct', children: task.progress + '%' }),
+                  jsx('div', {
+                    className: 'pm-feed-line',
+                    children: [
+                      jsx('span', { className: 'pm-feed-dot ' + task.status }),
+                      jsx('b', { children: '#' + task.id }),
+                      jsx('span', { children: clock(step ? step.ts : task.createdAt) }),
+                      jsx('span', { className: 'pm-feed-text', children: textOf(task, step) }),
+                      jsx('span', { className: 'pm-feed-pct', children: task.progress + '%' }),
+                    ],
+                  }),
+                  jsx('div', {
+                    className: 'pm-bar-track',
+                    children: jsx('div', {
+                      className: 'pm-bar ' + task.status,
+                      style: { width: task.progress + '%' },
+                    }),
+                  }),
                 ],
               }),
-              jsx('div', {
-                className: 'pm-bar-track',
-                children: jsx('div', {
-                  className: 'pm-bar ' + task.status,
-                  style: { width: task.progress + '%' },
-                }),
-              }),
+            ),
+          })
+        : null
+
+      const errorPanel = failed.length
+        ? jsxs('div', {
+            className: 'pm-error-full',
+            children: [
+              jsx('b', { children: '#' + failed[0].id + ' 安装失败 · ' + failed[0].label }),
+              jsx('pre', { children: failed[0].error || '未知错误' }),
             ],
-          }),
-        ),
-      })
+          })
+        : null
+
+      if (!feed && !errorPanel) return null
+      return jsxs('div', { children: [errorPanel, feed] })
     }
 
     function InstallTab({ onRefresh }) {
