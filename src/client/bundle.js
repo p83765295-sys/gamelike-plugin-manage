@@ -222,7 +222,13 @@ window.__ModuleLoader__.load({
 
     /** 紧凑实时信息流：每个任务只显示最新一步，新事件从顶部弹入 */
     function TasksPanel({ tasks }) {
-      const rows = tasks
+      const now = Date.now()
+      const visible = tasks.filter((task) => {
+        if (task.status === 'queued' || task.status === 'running') return true
+        const age = now - (task.finishedAt || 0)
+        return task.status === 'failed' ? age < 30000 : age < 8000
+      })
+      const rows = visible
         .map((task) => ({ task, step: task.steps[task.steps.length - 1] }))
         .sort((a, b) => {
           const ts = (x) => (x.step ? x.step.ts : x.task.createdAt)
