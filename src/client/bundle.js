@@ -73,29 +73,21 @@ window.__ModuleLoader__.load({
 .pm-drop{border:1.5px dashed var(--dsw-alias-border-l2);border-radius:12px;padding:22px 12px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;transition:border-color .15s,color .15s,background .15s;cursor:pointer}
 .pm-drop.on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-3)}
 .pm-drop b{display:block;font-size:14px;margin-bottom:4px;font-weight:600}
-.pm-tasks{display:flex;flex-direction:column;gap:8px}
-.pm-tasks-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin:6px 0 0;text-transform:uppercase;letter-spacing:.04em}
-.pm-task{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;transition:border-color .15s,background .15s}
-.pm-task.running{border-color:var(--dsw-alias-brand-primary)}
-.pm-task.failed{border-color:var(--dsw-alias-label-error)}
-.pm-task-head{display:flex;align-items:center;gap:8px}
-.pm-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:var(--dsw-alias-label-tertiary)}
-.pm-dot.queued{background:#f1c40f}
-.pm-dot.running{background:var(--dsw-alias-brand-primary);animation:pm-pulse 1s infinite alternate}
-.pm-dot.success{background:#2ecc71}
-.pm-dot.failed{background:var(--dsw-alias-label-error)}
+.pm-feed{display:flex;flex-direction:column;gap:3px;max-height:126px;overflow-y:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3);padding:6px 10px}
+.pm-feed::-webkit-scrollbar{width:8px}
+.pm-feed::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:4px}
+.pm-feed-item{display:flex;align-items:baseline;gap:7px;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:pm-pop .22s ease-out}
+.pm-feed-item b{font-weight:600;color:var(--dsw-alias-label-secondary);flex:0 0 auto}
+.pm-feed-item.ok{color:#2ecc71}
+.pm-feed-item.warn{color:#f1c40f}
+.pm-feed-item.error{color:var(--dsw-alias-label-error)}
+.pm-feed-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;align-self:center;background:var(--dsw-alias-label-tertiary)}
+.pm-feed-dot.queued{background:#f1c40f}
+.pm-feed-dot.running{background:var(--dsw-alias-brand-primary);animation:pm-pulse 1s infinite alternate}
+.pm-feed-dot.success{background:#2ecc71}
+.pm-feed-dot.failed{background:var(--dsw-alias-label-error)}
 @keyframes pm-pulse{from{opacity:.35}to{opacity:1}}
-.pm-task-label{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pm-task-status{font-size:11px;font-weight:500;border-radius:999px;padding:1px 8px;line-height:17px;white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}
-.pm-task-status.queued{color:#f1c40f}
-.pm-task-status.running{color:#4da3ff}
-.pm-task-status.success{color:#2ecc71}
-.pm-task-status.failed{color:var(--dsw-alias-label-error)}
-.pm-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
-.pm-step{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pm-step.ok{color:#2ecc71}
-.pm-step.warn{color:#f1c40f}
-.pm-step.error{color:var(--dsw-alias-label-error)}
+@keyframes pm-pop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
 `
 
     function fetchJson(path, init) {
@@ -221,48 +213,45 @@ window.__ModuleLoader__.load({
 
 
 
-    function TaskCard({ task }) {
-      const statusText = { queued: '排队中', running: '安装中', success: '已完成', failed: '失败' }[task.status] || task.status
-      const steps = task.steps.slice(-4)
+    /** 紧凑实时信息流：每个任务只显示最新一步，新事件从顶部弹入 */
+    function TasksPanel({ tasks }) {
+      const rows = tasks
+        .map((task) => ({ task, step: task.steps[task.steps.length - 1] }))
+        .sort((a, b) => {
+          const ts = (x) => (x.step ? x.step.ts : x.task.createdAt)
+          return ts(b) - ts(a)
+        })
+        .slice(0, 8)
+      if (!rows.length) return null
       const clock = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
-      return jsxs('div', {
-        className: 'pm-task ' + task.status,
-        children: [
+      const textOf = (task, step) => {
+        if (task.status === 'failed') return (task.error || '失败').slice(0, 72)
+        if (task.status === 'success') return step ? step.text : '完成'
+        if (task.status === 'queued') return '排队中 · ' + task.label
+        return step ? step.text : '准备中…'
+      }
+      const levelOf = (task, step) => {
+        if (task.status === 'failed') return 'error'
+        if (task.status === 'success') return 'ok'
+        if (step && step.level !== 'info') return step.level
+        return ''
+      }
+      return jsx('div', {
+        className: 'pm-feed',
+        children: rows.map(({ task, step }) =>
           jsx('div', {
-            className: 'pm-task-head',
+            key: task.id,
+            className: 'pm-feed-item ' + levelOf(task, step),
             children: [
-              jsx('span', { className: 'pm-dot ' + task.status }),
-              jsx('span', { className: 'pm-task-label', children: '#' + task.id + ' · ' + task.label }),
-              jsx('span', { className: 'pm-task-status ' + task.status, children: statusText }),
+              jsx('span', { className: 'pm-feed-dot ' + task.status }),
+              jsx('b', { children: '#' + task.id }),
+              jsx('span', { children: clock(step ? step.ts : task.createdAt) }),
+              jsx('span', { children: textOf(task, step) }),
             ],
           }),
-          steps.length
-            ? jsx('ul', {
-                className: 'pm-steps',
-                children: steps.map((st, i) =>
-                  jsx('li', { key: i, className: 'pm-step ' + st.level, children: clock(st.ts) + '  ' + st.text }),
-                ),
-              })
-            : null,
-        ],
+        ),
       })
     }
-
-    function TasksPanel({ tasks }) {
-      const active = tasks.filter((t) => t.status === 'queued' || t.status === 'running')
-      const done = tasks.filter((t) => t.status === 'success' || t.status === 'failed').slice(0, 4)
-      if (!tasks.length) return null
-      return jsxs('div', {
-        className: 'pm-tasks',
-        children: [
-          active.length ? jsx('p', { className: 'pm-tasks-title', children: '进行中 · ' + active.length + ' 个（最多 3 个并行）' }) : null,
-          ...active.map((t) => jsx(TaskCard, { key: t.id, task: t })),
-          done.length ? jsx('p', { className: 'pm-tasks-title', children: '最近完成' }) : null,
-          ...done.map((t) => jsx(TaskCard, { key: t.id, task: t })),
-        ],
-      })
-    }
-
 
     function InstallTab({ onRefresh }) {
       const [dir, setDir] = useState('')
