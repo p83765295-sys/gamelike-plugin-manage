@@ -81,4 +81,4 @@ DSH 插件管理器：入口位于 **设置 → 插件管理**。提供插件树
 
 ## License
 
-BSD-3-Clause
+MIT

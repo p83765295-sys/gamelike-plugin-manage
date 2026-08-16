@@ -21,7 +21,7 @@
     "scripts/build.mjs",
     "scripts/build.sh"
   ],
-  "license": "BSD-3-Clause",
+  "license": "MIT",
   "dependencies": {
     "tar": "^7.5.22",
     "yaml": "^2.8.1"
