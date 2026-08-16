@@ -54,6 +54,10 @@ window.__ModuleLoader__.load({
 .pm-picker,.pm-groups-scroll{--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);scrollbar-gutter:stable}
 .pm-picker{max-height:360px;overflow-y:auto;padding-right:4px}
 .pm-groups-scroll{max-height:360px;overflow-y:auto;padding-right:4px;flex-direction:column;gap:0;display:flex}
+.pm-export-box{border-top:1px solid var(--dsw-alias-border-l2);padding-top:4px;display:flex;flex-direction:column;gap:6px}
+.pm-export-list{display:flex;flex-direction:column;gap:2px;max-height:180px;overflow-y:auto;padding:0 0 0 22px}
+.pm-export-row{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-primary);cursor:pointer}
+.pm-export-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pm-plugin-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
 .pm-plugin-card:hover{border-color:var(--dsw-alias-label-dimmed)}
 .pm-plugin-card.open{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
@@ -249,6 +253,8 @@ window.__ModuleLoader__.load({
       'packages.export.title': '③ 导出插件包',
       'packages.export.desc': '导出所有分组为 .tgz（浏览器下载）。包内含 package.json + manifest.yml + plugins/，可在「插件安装」Tab 拖入安装。',
       'packages.export.packNamePlaceholder': '包名（默认 my-dsh-pack）',
+      'packages.export.selectGroups': '选择要导出的分组（{selected}/{total}）',
+      'packages.export.noneSelected': '请至少选择一个要导出的分组',
       'packages.export.required': '还没有可导出的分组（请先创建分组并加入插件）',
       'packages.export.building': '正在打包并下载 {name}.tgz …',
       'packages.export.failed': '导出失败',
@@ -375,6 +381,8 @@ window.__ModuleLoader__.load({
       'packages.export.title': '③ Export pack',
       'packages.export.desc': 'Export all groups as a .tgz download. The pack contains package.json + manifest.yml + plugins/, installable via the Install tab.',
       'packages.export.packNamePlaceholder': 'Pack name (default my-dsh-pack)',
+      'packages.export.selectGroups': 'Select groups to export ({selected}/{total})',
+      'packages.export.noneSelected': 'Select at least one group to export',
       'packages.export.required': 'No exportable groups yet (create a group with plugins first)',
       'packages.export.building': 'Packing and downloading {name}.tgz …',
       'packages.export.failed': 'Export failed',
@@ -1003,6 +1011,8 @@ window.__ModuleLoader__.load({
       const [selected, setSelected] = useState({})
       const [packName, setPackName] = useState('my-dsh-pack')
       const [pluginSearch, setPluginSearch] = useState('')
+      const [exportOpen, setExportOpen] = useState(false)
+      const [exportSelection, setExportSelection] = useState({})
       const [busy, setBusy] = useState(null)
       const [msg, setMsg] = useState(null)
       const items = (data && data.items) || []
@@ -1098,14 +1108,20 @@ window.__ModuleLoader__.load({
           .finally(() => setBusy(null))
       }
 
+      const exportableGroups = groups.filter((g) => g.plugins.length > 0)
+      const selectedExportGroups = exportableGroups.filter((g) => exportSelection[g.name] !== false)
+
       const exportPack = () => {
-        const exportGroups = groups.filter((g) => g.plugins.length > 0)
-        if (!exportGroups.length) {
+        if (!exportableGroups.length) {
           setMsg({ text: t('packages.export.required'), isErr: true })
           return
         }
+        if (!selectedExportGroups.length) {
+          setMsg({ text: t('packages.export.noneSelected'), isErr: true })
+          return
+        }
         const name = packName.trim() || 'dsh-plugin-pack'
-        const qs = '?name=' + encodeURIComponent(name) + '&groups=' + exportGroups.map((g) => encodeURIComponent(g.name)).join(',')
+        const qs = '?name=' + encodeURIComponent(name) + '&groups=' + selectedExportGroups.map((g) => encodeURIComponent(g.name)).join(',')
         setBusy('export')
         setMsg({ text: t('packages.export.building', { name }), isErr: false })
         fetch(API + '/export-pack' + qs)
@@ -1316,6 +1332,51 @@ window.__ModuleLoader__.load({
                   }),
                 ],
               }),
+              exportableGroups.length > 0
+                ? jsxs('div', {
+                    className: 'pm-export-box',
+                    children: [
+                      jsx('button', {
+                        type: 'button',
+                        className: 'pm-group-head',
+                        'aria-expanded': exportOpen,
+                        onClick: () => setExportOpen(!exportOpen),
+                        children: [
+                          jsx('span', {
+                            className: 'pm-caret',
+                            style: { transform: exportOpen ? 'none' : 'rotate(-90deg)', transition: 'transform .16s' },
+                            children: jsx(IconChevronDownOutline14, {}),
+                          }),
+                          jsx('span', { className: 'pm-group-title', children: t('packages.export.selectGroups', { selected: selectedExportGroups.length, total: exportableGroups.length }) }),
+                        ],
+                      }),
+                      exportOpen
+                        ? jsx('div', {
+                            className: 'pm-export-list',
+                            children: exportableGroups.map((g) =>
+                              jsx('label', {
+                                key: g.name,
+                                className: 'pm-export-row',
+                                children: [
+                                  jsx('input', {
+                                    type: 'checkbox',
+                                    checked: exportSelection[g.name] !== false,
+                                    onChange: () =>
+                                      setExportSelection((s) => ({
+                                        ...s,
+                                        [g.name]: s[g.name] === false,
+                                      })),
+                                  }),
+                                  jsx('span', { className: 'pm-export-name', title: g.name, children: '▣ ' + g.name }),
+                                  jsx('span', { className: 'pm-hint', children: t('packages.list.count', { count: g.plugins.length }) }),
+                                ],
+                              }),
+                            ),
+                          })
+                        : null,
+                    ],
+                  })
+                : null,
             ],
           }),
           msg
