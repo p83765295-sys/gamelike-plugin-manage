@@ -1,0 +1,45 @@
+name: Bug 报告
+description: 提交问题，帮助我们修复
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: 请先搜索是否已有相同 issue，并提供足够信息。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 发生了什么？
+      placeholder: 例如：M4 导出后无法导入
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 按步骤说明如何复现
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、DSH 版本、插件版本
+      placeholder: Windows 11 / DSH 0.x / gamelike-plugin-manage 0.1.0
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与截图
+      description: 相关日志、截图或 `/tmp/plugin-manage-restart-*.log`
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索已有 issue
+        - label: 我已阅读 README 和 CONTRIBUTING
