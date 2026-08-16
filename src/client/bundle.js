@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
 
     const styles = `
 .pm-sec{max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}
-.pm-manage{flex-direction:column;gap:12px;display:flex}
+.pm-manage,.pm-install{flex-direction:column;gap:12px;display:flex}
 .pm-heading{margin:0;font-size:18px;font-weight:600}
 .pm-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:1.5}
 .pm-tabs{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:flex-end;gap:22px;margin-top:2px;display:flex}
@@ -51,6 +51,8 @@ window.__ModuleLoader__.load({
 .pm-group-count{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}
 .pm-list{list-style:none;margin:0;padding:0;flex-direction:column;gap:10px;display:flex}
 .pm-plugin-grid{list-style:none;margin:0;padding:0;flex-direction:column;gap:10px;display:flex}
+.pm-picker{max-height:360px;overflow-y:auto;padding-right:4px}
+.pm-groups-scroll{max-height:360px;overflow-y:auto;padding-right:4px;flex-direction:column;gap:0;display:flex}
 .pm-plugin-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
 .pm-plugin-card:hover{border-color:var(--dsw-alias-label-dimmed)}
 .pm-plugin-card.open{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
@@ -64,6 +66,8 @@ window.__ModuleLoader__.load({
 .pm-pc-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:10px 0 14px;display:flex;flex-direction:column;gap:10px}
 .pm-pc-meta{display:flex;flex-direction:column;gap:4px;min-width:0}
 .pm-pc-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:0 1 auto;min-width:0;max-width:100%}
+.pm-pick-head{flex-wrap:wrap;row-gap:6px}
+.pm-pick-head .pm-pc-badges{flex:0 0 100%;max-width:100%;justify-content:flex-end}
 .pm-pc-footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding-top:12px;display:flex;flex-wrap:wrap}
 .pm-mod{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .pm-real{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -224,6 +228,7 @@ window.__ModuleLoader__.load({
       'packages.intro': '把已安装的用户插件（无论启用/禁用）加入分组，导出为 .tgz 插件包。插件包可在「插件安装」Tab 拖入一键安装，安装后自动恢复分组。',
       'packages.create.title': '① 勾选插件 → 创建/更新分组',
       'packages.create.groupNamePlaceholder': '分组名（例如：工具组 / 面板组）',
+      'packages.searchPlaceholder': '搜索插件…',
       'packages.create.groupNameRequired': '请填写分组名',
       'packages.create.selectRequired': '请先勾选要加入分组的插件（一个插件可以同时属于多个分组）',
       'packages.create.hint': '勾选的插件会加入上面填写的分组；插件可以同时属于多个分组，导出插件包时交集只内嵌一份。',
@@ -349,6 +354,7 @@ window.__ModuleLoader__.load({
       'packages.intro': 'Group installed user plugins (enabled or disabled) and export them as a .tgz pack. Drop the pack in the Install tab to restore groups automatically.',
       'packages.create.title': '① Select plugins → create/update group',
       'packages.create.groupNamePlaceholder': 'Group name (e.g. tools / panels)',
+      'packages.searchPlaceholder': 'Search plugins…',
       'packages.create.groupNameRequired': 'Please enter a group name',
       'packages.create.selectRequired': 'Select plugins to add (a plugin may belong to several groups)',
       'packages.create.hint': 'Selected plugins join the group above; plugins may belong to multiple groups, and export deduplicates intersections into one copy.',
@@ -734,6 +740,7 @@ window.__ModuleLoader__.load({
       }
 
       return jsxs('div', {
+        className: 'pm-install',
         children: [
           jsx('p', { className: 'pm-intro', children: t('install.intro') }),
           jsx('label', {
@@ -994,11 +1001,19 @@ window.__ModuleLoader__.load({
       const [desired, setDesired] = useState('as-is')
       const [selected, setSelected] = useState({})
       const [packName, setPackName] = useState('my-dsh-pack')
+      const [pluginSearch, setPluginSearch] = useState('')
       const [busy, setBusy] = useState(null)
       const [msg, setMsg] = useState(null)
       const items = (data && data.items) || []
       const groups = (data && data.groups) || []
       const userItems = items.filter((i) => i.source === 'user')
+      const pluginQuery = pluginSearch.trim().toLowerCase()
+      const visibleUserItems = userItems.filter((i) =>
+        !pluginQuery ||
+        displayId(i).toLowerCase().includes(pluginQuery) ||
+        i.name.toLowerCase().includes(pluginQuery) ||
+        i.id.toLowerCase().includes(pluginQuery),
+      )
       const selectedNames = Object.keys(selected).filter((k) => selected[k])
 
       const postJson = (path, body) =>
@@ -1120,7 +1135,7 @@ window.__ModuleLoader__.load({
           className: 'pm-plugin-card',
           children: [
             jsx('label', {
-              className: 'pm-pc-head',
+              className: 'pm-pc-head pm-pick-head',
               style: { cursor: 'pointer' },
               children: [
                 jsx('input', {
@@ -1191,9 +1206,17 @@ window.__ModuleLoader__.load({
                 ],
               }),
               jsx('p', { className: 'pm-hint', children: t('packages.create.hint') }),
+              jsx('input', {
+                className: 'pm-search',
+                placeholder: t('packages.searchPlaceholder'),
+                value: pluginSearch,
+                onChange: (e) => setPluginSearch(e.target.value),
+              }),
               userItems.length === 0
                 ? jsx('p', { className: 'pm-empty', children: t('noUserPlugins') })
-                : jsx('ul', { className: 'pm-plugin-grid', children: userItems.map(pluginRow) }),
+                : visibleUserItems.length === 0
+                  ? jsx('p', { className: 'pm-empty', children: t('noMatch') })
+                  : jsx('ul', { className: 'pm-plugin-grid pm-picker', children: visibleUserItems.map(pluginRow) }),
             ],
           }),
           jsxs('div', {
@@ -1202,11 +1225,13 @@ window.__ModuleLoader__.load({
               jsx('h3', { className: 'pm-card-title', children: t('packages.list.title') }),
               groups.length === 0
                 ? jsx('p', { className: 'pm-empty', children: t('noGroups') })
-                : groups.map((g) =>
-                    jsxs('div', {
-                      key: g.name,
-                      className: 'pm-row',
-                      children: [
+                : jsx('div', {
+                    className: 'pm-groups-scroll',
+                    children: groups.map((g) =>
+                      jsxs('div', {
+                        key: g.name,
+                        className: 'pm-row',
+                        children: [
                         jsxs('div', {
                           className: 'pm-row-head',
                           children: [
@@ -1263,6 +1288,7 @@ window.__ModuleLoader__.load({
                       ],
                     }),
                   ),
+                }),
             ],
           }),
           jsxs('div', {
