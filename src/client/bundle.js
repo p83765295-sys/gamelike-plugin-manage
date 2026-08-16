@@ -22,6 +22,7 @@ window.__ModuleLoader__.load({
 
     const styles = `
 .pm-sec{max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}
+.pm-manage{flex-direction:column;gap:12px;display:flex}
 .pm-heading{margin:0;font-size:18px;font-weight:600}
 .pm-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:1.5}
 .pm-tabs{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:flex-end;gap:22px;margin-top:2px;display:flex}
@@ -29,9 +30,11 @@ window.__ModuleLoader__.load({
 .pm-tab:hover,.pm-tab[data-active=true]{color:var(--dsw-alias-label-primary)}
 .pm-tab[data-active=true]:after,.pm-tab:focus-visible:after{background:var(--dsw-alias-label-primary);content:"";border-radius:2px 2px 0 0;height:2px;position:absolute;bottom:-1px;left:0;right:0}
 .pm-tab:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px;border-radius:2px}
-.pm-badges{align-items:center;gap:8px;display:flex;flex-wrap:wrap}
+.pm-badges{align-items:center;gap:8px;min-width:0;display:flex;flex-wrap:wrap}
 .pm-badge{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}
 .pm-badge.muted{background:0 0;color:var(--dsw-alias-label-tertiary)}
+.pm-badge-item{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0}
+.pm-badge-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pm-groups-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pm-group-chip{appearance:none;display:inline-flex;align-items:center;gap:6px;background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 8px;font:inherit;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);cursor:pointer}
 .pm-group-chip:hover{color:var(--dsw-alias-label-primary)}
@@ -84,7 +87,7 @@ window.__ModuleLoader__.load({
 .pm-hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;margin:0}
 .pm-placeholder{border-top:1px solid var(--dsw-alias-border-l2);padding-top:16px;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
 .pm-placeholder b{display:block;color:var(--dsw-alias-label-secondary);font-size:15px;font-weight:600;margin-bottom:6px}
-.pm-card{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.pm-card{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;min-width:0}
 .pm-card-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}
 .pm-card-desc{font-size:12px;color:var(--dsw-alias-label-tertiary);margin:0;line-height:1.5}
 .pm-input{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 12px;font-size:13px;line-height:1.5}
@@ -117,9 +120,9 @@ window.__ModuleLoader__.load({
 .pm-bar.success{background:var(--dsw-alias-state-success-primary)}
 .pm-bar.failed{background:var(--dsw-alias-state-error-primary)}
 .pm-bar.queued{background:var(--dsw-alias-state-warn-primary)}
-.pm-row{flex-direction:column;gap:6px;padding:10px 0;display:flex}
+.pm-row{flex-direction:column;gap:6px;padding:10px 0;min-width:0;display:flex}
 .pm-row + .pm-row{border-top:1px solid var(--dsw-alias-border-l2)}
-.pm-row-head{align-items:center;gap:8px;display:flex}
+.pm-row-head{align-items:center;gap:8px;min-width:0;display:flex}
 .pm-id{min-width:0;color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pm-chip-btn{appearance:none;border:0;background:0 0;cursor:pointer;font-size:11px;color:var(--dsw-alias-label-tertiary);padding:0 2px}
 .pm-chip-btn:hover{color:var(--dsw-alias-label-error)}
@@ -948,6 +951,7 @@ window.__ModuleLoader__.load({
       }
 
       return jsxs('div', {
+        className: 'pm-manage',
         children: [
           jsx('p', { className: 'pm-intro', children: t('manage.intro') }),
           pendingCount > 0
@@ -1233,9 +1237,9 @@ window.__ModuleLoader__.load({
                           children: g.plugins.map((name) =>
                             jsx('span', {
                               key: name,
-                              className: 'pm-badge',
+                              className: 'pm-badge pm-badge-item',
                               children: [
-                                name,
+                                jsx('span', { className: 'pm-badge-text', title: name, children: name }),
                                 jsx('button', {
                                   type: 'button',
                                   className: 'pm-chip-btn',
