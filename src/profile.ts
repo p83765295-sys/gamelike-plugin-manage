@@ -410,7 +410,19 @@ export function readBundleInsertMap(packagePath: string, profileDir: string): Ma
       if (typeof patchRel !== 'string') continue
       const patchPath = join(dir, patchRel)
       if (!existsSync(patchPath)) continue
-      for (const id of readPatchInsertIds(patchPath)) map.set(id, name)
+      const patchDoc = readPatchDocument(patchPath)
+      for (const item of topSeq(patchDoc).items) {
+        if (!isMap(item)) continue
+        const insert = item.get('insert')
+        if (!isSeq(insert)) continue
+        for (const child of insert.items) {
+          if (!isMap(child)) continue
+          const rowId = child.get('id')
+          if (typeof rowId === 'string' && rowId) map.set(rowId, name)
+          const rowName = child.get('name')
+          if (typeof rowName === 'string' && rowName) map.set(rowName, name)
+        }
+      }
     } catch {
       // 单个 bundle 元数据损坏不影响其它分类
     }

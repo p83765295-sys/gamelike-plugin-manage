@@ -972,14 +972,18 @@ export async function exportPack(
   const activeGroups = groups.filter((g) => g.plugins.length > 0)
   if (activeGroups.length === 0) throw new Error('没有可导出的插件：请先创建分组并加入插件')
 
+  const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
   const seen = new Set<string>()
   const pluginDirs = new Map<string, string>()
   for (const group of activeGroups) {
-    for (const pluginName of group.plugins) {
+    for (const rawName of group.plugins) {
+      // 兼容旧分组数据：运行 entry 名（@deepseek-ai/dsh-skill-filesystem）
+      // 反查真实 bundle 包名（@tt-a1i/archify-dsh）后再定位目录。
+      const pluginName = bundleInserts.get(rawName) ?? rawName
       if (seen.has(pluginName)) continue
       const dir = resolveInstalledDir(paths, pluginName)
       if (!dir || !existsSync(join(dir, 'package.json'))) {
-        throw new Error(`无法导出「${pluginName}」：找不到已安装插件目录（${dir || '未解析'}）`)
+        throw new Error(`无法导出「${rawName}」：找不到已安装插件目录（${dir || '未解析'}）`)
       }
       seen.add(pluginName)
       pluginDirs.set(pluginName, dir)
@@ -1011,7 +1015,7 @@ export async function exportPack(
     const manifestGroups: PackGroup[] = activeGroups.map((group) => ({
       name: group.name,
       desired: group.desired,
-      plugins: group.plugins.map((pluginName) => ({ ...pluginEntries.get(pluginName)! })),
+      plugins: group.plugins.map((rawName) => ({ ...pluginEntries.get(bundleInserts.get(rawName) ?? rawName)! })),
     }))
 
     const pkgJson = {

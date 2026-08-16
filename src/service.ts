@@ -23,7 +23,6 @@ import {
 import { InstallQueue, type InstallTask, type TaskContext } from './tasks.js'
 import {
   deleteGroup,
-  groupsOfPlugin,
   readGroups,
   upsertGroup,
   type PluginGroup,
@@ -121,6 +120,18 @@ function bundleOf(name: string, bundles: ProfileBundle[]): ProfileBundle | undef
   return bundles.find((bundle) => bundle.name === name)
 }
 
+/**
+ * 运行 entry 名 → 真实 bundle 包名。
+ * bundle patch 可能用与包名不同的 id/name（如 @tt-a1i/archify-dsh
+ * 插入 @deepseek-ai/dsh-skill-filesystem），分组与导出统一使用 bundle 名。
+ */
+function resolveBundleName(name: string, id: string, bundles: ProfileBundle[], bundleInserts: Map<string, string>): string {
+  const patchId = patchIdOf(id)
+  const direct = bundles.find((bundle) => bundle.name === name || bundle.name === patchId || bundle.name === id)
+  if (direct) return direct.name
+  return bundleInserts.get(name) ?? bundleInserts.get(patchId) ?? bundleInserts.get(id) ?? name
+}
+
 export function createService(ctx: Context, paths: ResolvedPaths): PluginManageService {
   const loader: Loader = ctx.loader
   const queue = new InstallQueue()
@@ -161,10 +172,14 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       if (change) {
         desired = change.op === 'disable' ? 'disabled' : change.op === 'enable' ? 'enabled' : 'removed'
       }
-      const pluginGroups = groupsOfPlugin(groups, name)
+      const bundleName = source === 'user' ? resolveBundleName(name, id, bundles, bundleInserts) : name
+      const groupCandidates = source === 'user' ? [name, bundleName, patchIdOf(id)] : [name]
+      const pluginGroups = groups
+        .filter((group) => group.plugins.some((plugin) => groupCandidates.includes(plugin)))
+        .map((group) => group.name)
       let version: string | undefined
       if (source === 'user') {
-        const installedDir = resolveInstalledDir(paths, name)
+        const installedDir = resolveInstalledDir(paths, bundleName)
         if (installedDir) version = readVersion(installedDir)
       }
       items.push({
@@ -269,7 +284,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
     }
     let applied = 0
     for (const [pluginName, op] of desiredMap) {
-      const entry = [...loader.entries()].find((e) => !e.options.group && e.options.name === pluginName)
+      const entry = entryByGroupMember(pluginName)
       if (!entry) continue // bundle-only / 尚未进入运行树：重启后由 include 装配
       upsertPending(paths.pendingPath, {
         id: entry.id,
@@ -293,10 +308,21 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
     for (const entry of loader.entries()) {
       if (entry.options.group) continue
       if (classify(entry.id, entry.options.name, bundles, patchIds, bundleInserts) === 'user') {
-        set.add(entry.options.name)
+        set.add(resolveBundleName(entry.options.name, entry.id, bundles, bundleInserts))
       }
     }
     return set
+  }
+
+  /** 按分组成员名（bundle 包名或旧运行名）查找运行 entry */
+  function entryByGroupMember(pluginName: string) {
+    const bundles = readUserBundles(paths.packagePath)
+    const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
+    return [...loader.entries()].find((entry) => {
+      if (entry.options.group) return false
+      if (entry.options.name === pluginName) return true
+      return resolveBundleName(entry.options.name, entry.id, bundles, bundleInserts) === pluginName
+    })
   }
 
   return {
@@ -430,9 +456,17 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       const clean = name.trim()
       if (!clean) throw new Error('分组名必填')
       const users = userNames()
+      const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
       const valid: string[] = []
       for (const pluginName of plugins) {
-        if (users.has(pluginName)) valid.push(pluginName)
+        if (users.has(pluginName)) {
+          valid.push(pluginName)
+          continue
+        }
+        // 兼容旧数据：分组里可能存的是运行 entry 名（如 @deepseek-ai/dsh-skill-filesystem），
+        // 反查真实 bundle 名（@tt-a1i/archify-dsh）后迁移。
+        const owner = bundleInserts.get(pluginName)
+        if (owner && users.has(owner)) valid.push(owner)
       }
       if (valid.length === 0) throw new Error('分组里没有可用的用户插件')
       return upsertGroup(paths.groupsPath, { name: clean, desired, plugins: valid })
@@ -449,7 +483,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       let count = 0
       for (const pluginName of group.plugins) {
         if (!users.has(pluginName)) continue
-        const entry = [...loader.entries()].find((e) => !e.options.group && e.options.name === pluginName)
+        const entry = entryByGroupMember(pluginName)
         if (!entry) continue
         upsertPending(paths.pendingPath, { id: entry.id, op, ts: Date.now() })
         count++
