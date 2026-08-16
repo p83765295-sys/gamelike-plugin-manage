@@ -176,9 +176,6 @@ window.__ModuleLoader__.load({
       'manage.searchPlaceholder': '搜索插件 id / 包名…',
       'manage.all': '全部',
       'manage.ungrouped': '未分组',
-      'manage.ungroupedCount': '未分组 {count}',
-      'manage.nativeCount': '原生 {count}',
-      'manage.groupCount': '{name} {count}',
       'manage.matchCount': '匹配 {matched} / 共 {total}',
       'manage.itemCount': '{count} 个',
       'manage.groupEnable': '整组启用',
@@ -304,9 +301,6 @@ window.__ModuleLoader__.load({
       'manage.searchPlaceholder': 'Search plugin id / package name…',
       'manage.all': 'All',
       'manage.ungrouped': 'Ungrouped',
-      'manage.ungroupedCount': '{count} ungrouped',
-      'manage.nativeCount': '{count} native',
-      'manage.groupCount': '{name} {count}',
       'manage.matchCount': '{matched} / {total} matched',
       'manage.itemCount': '{count}',
       'manage.groupEnable': 'Enable group',
@@ -956,15 +950,12 @@ window.__ModuleLoader__.load({
       return jsxs('div', {
         children: [
           jsx('p', { className: 'pm-intro', children: t('manage.intro') }),
-          jsx('div', {
-            className: 'pm-badges',
-            children: [
-              jsx('span', { className: 'pm-badge', children: t('manage.nativeCount', { count: nativeAll.length }) }),
-              jsx('span', { className: 'pm-badge', children: t('manage.ungroupedCount', { count: userAll.length }) }),
-              groups.map((g) => jsx('span', { key: g.name, className: 'pm-badge', children: t('manage.groupCount', { name: '▣ ' + g.name, count: g.plugins.length }) })),
-              pendingCount > 0 ? jsx('span', { className: 'pm-st pending', children: t('pending.count', { count: pendingCount }) }) : null,
-            ],
-          }),
+          pendingCount > 0
+            ? jsx('div', {
+                className: 'pm-badges',
+                children: jsx('span', { className: 'pm-st pending', children: t('pending.count', { count: pendingCount }) }),
+              })
+            : null,
           jsx('input', {
             className: 'pm-search',
             placeholder: t('manage.searchPlaceholder'),
