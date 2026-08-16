@@ -42,8 +42,6 @@ export interface PluginItem {
   groups: string[]
   /** 已安装用户插件的版本（来自 package.json version） */
   version?: string
-  /** 图标接口地址（仅用户插件；找不到图标时该地址返回 404，UI 自动隐藏） */
-  iconUrl?: string
 }
 
 /** M4 插件分组（映射到 M1） */

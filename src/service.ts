@@ -28,7 +28,6 @@ import {
   upsertGroup,
   type PluginGroup,
 } from './groups.js'
-import { findPluginIcon, type PluginIcon } from './icons.js'
 import { readVersion } from './store.js'
 import {
   messageOf,
@@ -54,8 +53,6 @@ export interface TaskAccepted {
 
 export interface PluginManageService {
   list(): PluginManageSnapshot
-  /** 探测用户插件图标（仅在 bundles 目录内，未找到返回 null） */
-  icon(name: string): PluginIcon | null
   disable(id: string): Promise<ActionOk>
   enable(id: string): Promise<ActionOk>
   uninstall(id: string): Promise<ActionOk>
@@ -166,16 +163,9 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       }
       const pluginGroups = groupsOfPlugin(groups, name)
       let version: string | undefined
-      let iconUrl: string | undefined
       if (source === 'user') {
-        const patchId = patchIdOf(id)
-        // bundle 行可能用不同的 entry id（如 archify → skill-filesystem）：
-        // 优先取 bundles 里名字匹配的包，再按 patch insert id 反查，最后退回运行名。
-        const direct = bundles.find((bundle) => bundle.name === name || bundle.name === patchId || bundle.name === id)
-        const iconName = direct?.name ?? bundleInserts.get(patchId) ?? bundleInserts.get(id) ?? name
-        const installedDir = resolveInstalledDir(paths, iconName)
+        const installedDir = resolveInstalledDir(paths, name)
         if (installedDir) version = readVersion(installedDir)
-        iconUrl = '/plugin-manage/api/icon?name=' + encodeURIComponent(iconName)
       }
       items.push({
         id,
@@ -189,7 +179,6 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
         group: pluginGroups[0],
         groups: pluginGroups,
         version,
-        iconUrl,
       })
     }
 
@@ -312,8 +301,6 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
 
   return {
     list,
-
-    icon: (name: string) => findPluginIcon(paths, name),
 
     async disable(id: string): Promise<ActionOk> {
       const { source } = requireRunning(id)
