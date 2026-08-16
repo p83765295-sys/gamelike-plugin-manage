@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
 
     const styles = `
 .pm-sec{max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}
-.pm-manage,.pm-install{flex-direction:column;gap:12px;display:flex}
+.pm-manage,.pm-install,.pm-packages{flex-direction:column;gap:12px;display:flex}
 .pm-heading{margin:0;font-size:18px;font-weight:600}
 .pm-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:1.5}
 .pm-tabs{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:flex-end;gap:22px;margin-top:2px;display:flex}
@@ -1171,6 +1171,7 @@ window.__ModuleLoader__.load({
       }
 
       return jsxs('div', {
+        className: 'pm-packages',
         children: [
           jsx('p', { className: 'pm-intro', children: t('packages.intro') }),
           jsxs('div', {
