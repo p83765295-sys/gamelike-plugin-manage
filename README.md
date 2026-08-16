@@ -1,5 +1,7 @@
 # gamelike-plugin-manage
 
+![gamelike-plugin-manage](assets/social-preview.png)
+
 DSH 插件管理器：入口位于 **设置 → 插件管理**。提供插件树管理、插件安装、插件分组与插件包导出。本项目可以帮你**查看、禁用、启用、卸载、更新 DSH 插件，批量安装第三方插件，打包/迁移插件集合，并在禁用或卸载插件时清理其自带的本地 Agent 预设**。
 
 > 面向用户：本文是安装与使用教程。开发者文档见 [DEVELOPER.md](./DEVELOPER.md)。
