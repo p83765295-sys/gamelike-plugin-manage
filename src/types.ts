@@ -36,8 +36,12 @@ export interface PluginItem {
   uninstallable: boolean
   /** 临时注入提示 */
   ephemeral?: string
-  /** 所属分组名（M4 创建，M1 展示） */
+  /** 所属分组名（M4 创建，M1 展示；多归属时取第一个） */
   group?: string
+  /** 所属的全部分组名（M4 多归属） */
+  groups: string[]
+  /** 已安装用户插件的版本（来自 package.json version） */
+  version?: string
 }
 
 /** M4 插件分组（映射到 M1） */
@@ -62,7 +66,39 @@ export interface PluginManageSnapshot {
 export interface PackGroup {
   name: string
   desired: 'enabled' | 'disabled' | 'as-is'
-  plugins: { name: string; path: string; sha256: string }[]
+  plugins: { name: string; path: string; version?: string; sha256?: string }[]
+}
+
+/** 插件身份：包名 + 版本 + 内容哈希 */
+export interface PluginIdentity {
+  name: string
+  version: string
+  /** 插件目录聚合 sha256（导出时计算，安装时校验） */
+  sha256?: string
+}
+
+/** 插件包安装计划：对每个成员的裁决结果 */
+export interface PlanItem {
+  identity: PluginIdentity
+  /** 来源目录（已吸收进 PluginStore 的实体，或已安装的现有目录） */
+  dir: string
+  /** 决策 */
+  decision: 'install' | 'skip-installed' | 'conflict'
+  /** skip 时说明原因；冲突时给出可选动作 */
+  reason: string
+  /** 冲突级别：info 提示 / warn 可忽略 / error 阻断 */
+  level: 'info' | 'warn' | 'error'
+}
+
+/** 包级安装计划（dry-run 产物） */
+export interface InstallPlan {
+  items: PlanItem[]
+  /** 是否全部被跳过（没有真正需要装配的插件） */
+  allSkipped: boolean
+  /** 阻断性冲突数 */
+  blocking: number
+  /** 计划将要实际装配的插件目录（保持顺序） */
+  toActivate: string[]
 }
 
 /** 导出插件包结果 */

@@ -4,7 +4,9 @@
  * 分组是插件包（M4）与 M1 之间的映射层：
  * - M4 创建/编辑分组，导出为插件包 manifest；
  * - M1 显示分组徽标、按分组过滤、整组启用/禁用。
- * 一个插件（按包名 name 标识）同一时刻只能属于一个分组。
+ * 一个插件（按包名 name 标识）可以属于多个分组（多归属 tag）：
+ * 分组是引用集合的视图，交集（同一插件出现在多个分组/多个包里）
+ * 是常态而非错误，导出端用 seen 去重即可。
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -75,17 +77,14 @@ export function writeGroups(path: string, groups: PluginGroup[]): void {
   const doc = parseDocument(JSON.stringify(data))
   const node = doc.contents as YAMLMap
   node.set('version', 1)
-  node.commentBefore = ' 插件管理分组：M4 创建，M1 展示/过滤/整组启用。一个插件只能属于一个分组。'
+  node.commentBefore = ' 插件管理分组：M4 创建，M1 展示/过滤/整组启用。一个插件可以属于多个分组。'
   atomicWrite(path, String(doc))
 }
 
-/** 保存/覆盖一个分组；并把组内插件从其它分组移除（一个插件只属于一个分组） */
+/** 保存/覆盖一个分组；不把组内插件从其它分组移除（多归属） */
 export function upsertGroup(path: string, group: PluginGroup): PluginGroup[] {
   const groups = readGroups(path)
   const next = groups.filter((g) => g.name !== group.name)
-  for (const other of next) {
-    other.plugins = other.plugins.filter((p) => !group.plugins.includes(p))
-  }
   next.push({ name: group.name, desired: group.desired, plugins: [...new Set(group.plugins)] })
   writeGroups(path, next)
   return next
@@ -107,6 +106,12 @@ export function removePluginsFromGroups(path: string, pluginNames: string[]): Pl
   return groups
 }
 
+/** 插件所属的第一个分组（向后兼容 M1 徽标） */
 export function groupOfPlugin(groups: PluginGroup[], pluginName: string): PluginGroup | undefined {
   return groups.find((g) => g.plugins.includes(pluginName))
+}
+
+/** 插件所属的全部分组名（多归属） */
+export function groupsOfPlugin(groups: PluginGroup[], pluginName: string): string[] {
+  return groups.filter((g) => g.plugins.includes(pluginName)).map((g) => g.name)
 }

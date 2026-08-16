@@ -7,18 +7,18 @@
  *                       由队列串行执行（共享 profile 文件与 loader 树）。
  */
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { create as tarCreate, x as tarExtract } from 'tar'
 import { parseDocument, stringify as yamlStringify } from 'yaml'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
-import { addBundle, messageOf, readUserBundles } from './profile.js'
-import type { ExportPackResult, PackGroup, PluginGroup } from './types.js'
+import { addBundle, messageOf, readBundleInsertMap, readPatchDisabledIds, readPatchInsertIds, readUserBundles, writePatchDisabled } from './profile.js'
+import { absorbPlugin, copyTreeExclude, posixPath, readBundlePatchRel, readVersion, sha256OfDir } from './store.js'
+import type { ExportPackResult, InstallPlan, PackGroup, PlanItem, PluginGroup, PluginIdentity } from './types.js'
 
 export type StepFn = (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => void
 
@@ -37,10 +37,14 @@ export interface InstallOptions {
   onProgress?: (value: number) => void
 }
 
-/** 插件包里一个待安装插件的实际目录 */
+/** 插件包里一个待安装插件的实际目录（吸收进 PluginStore 后的实体） */
 export interface PreparedPackPlugin {
   name: string
   dir: string
+  version: string
+  sha256: string
+  /** 是否已在 store 中存在（交集去重） */
+  existed: boolean
 }
 
 export interface PreparedPack {
@@ -52,7 +56,7 @@ export interface Prepared {
   kind: 'single' | 'suite' | 'pack'
   name: string
   dir: string
-  /** 待激活的插件目录（按顺序） */
+  /** 待激活的插件目录（按顺序；kind==='pack' 时等于 plan.toActivate） */
   plugins: string[]
   /** 待复制的预设目录 */
   presets: string[]
@@ -60,6 +64,8 @@ export interface Prepared {
   notes: { text: string; level: 'info' | 'ok' | 'warn' | 'error' }[]
   /** kind==='pack' 时：manifest 里的分组与插件目录映射 */
   pack?: PreparedPack
+  /** kind==='pack' 时：dry-run 装配计划（交集裁决结果） */
+  plan?: InstallPlan
 }
 
 const MAX_SOURCE_LEN = 500
@@ -263,58 +269,6 @@ export function detectSuite(root: string): { plugins: string[]; presets: string[
   return { plugins, presets }
 }
 
-/** 复制目录但排除 node_modules/.git（插件依赖由安装器按需重装） */
-function copyTreeExclude(src: string, dest: string): void {
-  mkdirSync(dest, { recursive: true })
-  let entries: string[] = []
-  try { entries = readdirSync(src) } catch { return }
-  for (const name of entries) {
-    if (name === 'node_modules' || name === '.git') continue
-    const child = join(src, name)
-    const target = join(dest, name)
-    try {
-      const st = lstatSync(child)
-      if (st.isDirectory()) copyTreeExclude(child, target)
-      else if (st.isFile()) {
-        mkdirSync(dirname(target), { recursive: true })
-        copyFileSync(child, target)
-      }
-    } catch { /* 单个文件复制失败不阻断整个导出 */ }
-  }
-}
-
-/** 计算目录内容聚合 sha256（文件相对路径 + 内容；排除 node_modules/.git） */
-function sha256OfDir(dir: string): string {
-  const root = resolve(dir)
-  const files: string[] = []
-  const walk = (d: string) => {
-    let entries: string[] = []
-    try { entries = readdirSync(d) } catch { return }
-    for (const name of entries) {
-      if (name === 'node_modules' || name === '.git') continue
-      const child = join(d, name)
-      try {
-        const st = lstatSync(child)
-        if (st.isDirectory()) walk(child)
-        else if (st.isFile()) files.push(relative(root, child))
-      } catch { /* ignore */ }
-    }
-  }
-  walk(root)
-  files.sort()
-  const hash = createHash('sha256')
-  for (const rel of files) {
-    hash.update(rel.replace(/\\/g, '/') + '\0')
-    hash.update(readFileSync(join(root, rel)))
-    hash.update('\0')
-  }
-  return hash.digest('hex')
-}
-
-function posixPath(value: string): string {
-  return value.split(sep).join('/')
-}
-
 /** 解析已安装用户插件的实际目录（link: 目录或 profile node_modules 包） */
 export function resolveInstalledDir(paths: ResolvedPaths, name: string): string | undefined {
   const pkg = (() => {
@@ -334,6 +288,22 @@ export function resolveInstalledDir(paths: ResolvedPaths, name: string): string 
   return join(paths.profileDir, 'node_modules', ...name.split('/'))
 }
 
+/** 已安装用户插件信息（版本来自实体目录 package.json） */
+export interface InstalledInfo {
+  dir: string
+  version?: string
+  specifier?: string
+}
+
+/** 读已安装用户插件信息（bundles 中存在的包；读取失败返回 undefined） */
+export function readInstalledInfo(paths: ResolvedPaths, name: string): InstalledInfo | undefined {
+  if (!readUserBundles(paths.packagePath).some((bundle) => bundle.name === name)) return undefined
+  const dir = resolveInstalledDir(paths, name)
+  if (!dir || !existsSync(join(dir, 'package.json'))) return undefined
+  const bundle = readUserBundles(paths.packagePath).find((b) => b.name === name)
+  return { dir, version: readVersion(dir), specifier: bundle?.specifier }
+}
+
 /** 插件包检测：顶层 package.json 声明 dsh.pack 且存在 manifest.yml */
 function isPackDir(dir: string): boolean {
   const pkgPath = join(dir, 'package.json')
@@ -347,17 +317,18 @@ function isPackDir(dir: string): boolean {
   }
 }
 
-/** 读取插件包 manifest（只认声明式文件；返回分组清单） */
-export function readPackManifest(root: string): { groups: PackGroup[]; packageJson: Record<string, unknown> } {
+/** 读取插件包 manifest（只认声明式文件；返回分组清单，兼容 dsh-plugin-pack@1 / @2） */
+export function readPackManifest(root: string): { groups: PackGroup[]; format: string; packageJson: Record<string, unknown> } {
   const manifestPath = join(root, 'manifest.yml')
   if (!existsSync(manifestPath)) throw new Error('插件包缺少 manifest.yml')
   const doc = parseDocument(readFileSync(manifestPath, 'utf8'))
   if (doc.errors.length) throw new Error('manifest.yml 解析失败: ' + doc.errors.map((e) => e.message).join('; '))
   const data = doc.toJS() as {
+    pack?: { format?: unknown }
     groups?: Array<{
       name?: unknown
       desired?: unknown
-      plugins?: Array<{ name?: unknown; path?: unknown; sha256?: unknown }>
+      plugins?: Array<{ name?: unknown; path?: unknown; version?: unknown; sha256?: unknown }>
     }>
   }
   if (!Array.isArray(data.groups) || data.groups.length === 0) throw new Error('插件包 manifest.yml 缺少 groups')
@@ -368,12 +339,13 @@ export function readPackManifest(root: string): { groups: PackGroup[]; packageJs
       ? g.plugins.map((p) => ({
           name: String(p.name ?? '').trim(),
           path: String(p.path ?? '').trim(),
-          sha256: String(p.sha256 ?? '').trim(),
+          version: String(p.version ?? '').trim() || undefined,
+          sha256: String(p.sha256 ?? '').trim() || undefined,
         }))
       : [],
   }))
   if (groups.some((g) => !g.name)) throw new Error('插件包 manifest.yml 存在空分组名')
-  return { groups, packageJson: (doc.toJS() as Record<string, unknown>) ?? {} }
+  return { groups, format: String(data.pack?.format ?? 'dsh-plugin-pack@1'), packageJson: (doc.toJS() as Record<string, unknown>) ?? {} }
 }
 
 /** 校验插件目录仍在解包根内（防 manifest path 越界） */
@@ -387,21 +359,189 @@ function safeStagePath(root: string, relPath: string): string {
   return target
 }
 
-/** 从已解包的插件包 stage 准备插件（复制到 pluginsDir + 依赖/构建） */
+/**
+ * 构建包级装配计划（dry-run）：对吸收进 PluginStore 的候选插件逐一裁决。
+ *
+ * 交集策略：
+ * - 安全交集（同名同版本已装）→ skip-installed，静默去重；
+ * - 版本交集（同名不同版本）→ conflict，不静默覆盖，提示人工决定；
+ * - 资源交集（entry id 被其它插件占用 / 用户 patch 已声明）→ conflict；
+ * - 卸载意图（patch 顶层 disabled 条目）→ 允许安装，激活时清除 disabled
+ *   （用户主动导入插件包 = 显式重新安装请求）。
+ */
+export function buildInstallPlan(
+  ctx: Context,
+  paths: ResolvedPaths,
+  candidates: PreparedPackPlugin[],
+): InstallPlan {
+  const items: PlanItem[] = []
+  const running = new Map<string, string>()
+  for (const entry of ctx.loader.entries()) {
+    if (entry.options.group) continue
+    running.set(entry.id, entry.options.name)
+  }
+  const patchIds = readPatchInsertIds(paths.patchPath)
+  const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
+  const disabledIds = readPatchDisabledIds(paths.patchPath)
+
+  for (const candidate of candidates) {
+    const identity: PluginIdentity = { name: candidate.name, version: candidate.version, sha256: candidate.sha256 }
+    const installed = readInstalledInfo(paths, candidate.name)
+    if (installed) {
+      const sameVersion = !!installed.version && !!candidate.version && installed.version === candidate.version
+      if (sameVersion) {
+        // 同名同版本：再比较内容哈希（v2 包）。哈希一致才是安全交集；
+        // 哈希不同（同名同版本不同内容）按硬冲突处理，不静默覆盖。
+        const sameContent = !candidate.sha256 || sha256OfDir(installed.dir) === candidate.sha256
+        if (sameContent) {
+          items.push({
+            identity,
+            dir: installed.dir,
+            decision: 'skip-installed',
+            reason: `已安装同版本同内容 ${installed.version}，交集去重（无需重复装配）`,
+            level: 'info',
+          })
+          continue
+        }
+        items.push({
+          identity,
+          dir: installed.dir,
+          decision: 'conflict',
+          reason: `内容冲突：已安装 ${installed.version}，但包内内容哈希不同（同版本不同内容）。不静默覆盖；请卸载后重试。`,
+          level: 'error',
+        })
+        continue
+      }
+      items.push({
+        identity,
+        dir: installed.dir,
+        decision: 'conflict',
+        reason: `版本冲突：已安装 ${installed.version || '未知版本'}，插件包携带 ${candidate.version || '未知版本'}。不静默覆盖；如需升级请先在插件管理里卸载旧版本，或使用更新功能。`,
+        level: 'error',
+      })
+      continue
+    }
+
+    // 资源交集：entry id 已被其它插件占用。
+    // 检查三层：loader.create 的包名 id、include 展开前缀、以及包内 cordis.patch.yml 声明的 insert id。
+    const checkRunningId = (id: string): string | undefined => {
+      const owner = running.get(id)
+      if (owner !== undefined && owner !== candidate.name) return owner
+      const includeOwner = running.get('include:' + id)
+      if (includeOwner !== undefined && includeOwner !== candidate.name) return includeOwner
+      return undefined
+    }
+    const runningOwner = checkRunningId(candidate.name)
+    if (runningOwner) {
+      items.push({
+        identity,
+        dir: candidate.dir,
+        decision: 'conflict',
+        reason: `entry id「${candidate.name}」已被运行树中的「${runningOwner}」占用，不能重复装配。`,
+        level: 'error',
+      })
+      continue
+    }
+    const ownPatchIds = new Set<string>([candidate.name])
+    const bundlePatchRel = readBundlePatchRel(candidate.dir)
+    if (bundlePatchRel) {
+      for (const id of readPatchInsertIds(join(candidate.dir, bundlePatchRel))) ownPatchIds.add(id)
+    }
+    for (const id of ownPatchIds) {
+      if (id === candidate.name) {
+        if (patchIds.has(id)) {
+          items.push({
+            identity,
+            dir: candidate.dir,
+            decision: 'conflict',
+            reason: `cordis.patch.yml 已存在同 id「${id}」的 insert 行（可能是手工装配），请先在管理列表卸载后重试。`,
+            level: 'error',
+          })
+          continue
+        }
+      } else {
+        // bundle patch 里声明的 insert id 与包名不同（如 archify → skill-filesystem）
+        const owner = bundleInserts.get(id)
+        if (owner !== undefined && owner !== candidate.name) {
+          items.push({
+            identity,
+            dir: candidate.dir,
+            decision: 'conflict',
+            reason: `该插件 bundle patch 声明的 entry id「${id}」已被用户插件「${owner}」占用。`,
+            level: 'error',
+          })
+          continue
+        }
+        if (patchIds.has(id)) {
+          items.push({
+            identity,
+            dir: candidate.dir,
+            decision: 'conflict',
+            reason: `该插件 bundle patch 声明的 entry id「${id}」已存在于 cordis.patch.yml。`,
+            level: 'error',
+          })
+          continue
+        }
+        const runningOther = checkRunningId(id)
+        if (runningOther) {
+          items.push({
+            identity,
+            dir: candidate.dir,
+            decision: 'conflict',
+            reason: `该插件 bundle patch 声明的 entry id「${id}」已被运行树中的「${runningOther}」占用。`,
+            level: 'error',
+          })
+          continue
+        }
+      }
+    }
+
+    const note = disabledIds.has(candidate.name)
+      ? '检测到该插件此前被禁用/卸载（patch 存在 disabled 覆盖），本次导入将清除该覆盖并按包内版本重新装配。'
+      : '未安装，计划装配。'
+    items.push({
+      identity,
+      dir: candidate.dir,
+      decision: 'install',
+      reason: note,
+      level: disabledIds.has(candidate.name) ? 'warn' : 'info',
+    })
+  }
+
+  const toActivate = items.filter((item) => item.decision === 'install').map((item) => item.dir)
+  return {
+    items,
+    allSkipped: items.length > 0 && toActivate.length === 0,
+    blocking: items.filter((item) => item.decision === 'conflict' && item.level === 'error').length,
+    toActivate,
+  }
+}
+
+/** 从已解包的插件包 stage 准备插件：校验 sha256 → 吸收进 PluginStore → dry-run 计划 */
 async function preparePackFromStage(paths: ResolvedPaths, root: string, opts: InstallOptions): Promise<Prepared> {
   const step = opts.onStep ?? (() => {})
-  const { groups } = readPackManifest(root)
+  const { groups, format } = readPackManifest(root)
   const packPkg = readPkg(root)
-  const preparedPlugins: PreparedPackPlugin[] = []
+  const candidates: PreparedPackPlugin[] = []
   const notes: Prepared['notes'] = []
+  const seenNames = new Set<string>()
+  const isV2 = format === 'dsh-plugin-pack@2'
+
+  if (!isV2) {
+    notes.push({ text: '旧版插件包（dsh-plugin-pack@1）：缺少 version/sha256 声明，将不做内容完整性校验。', level: 'warn' })
+  }
 
   for (const group of groups) {
     for (const plugin of group.plugins) {
       const name = plugin.name
       if (!name) {
-        notes.push({ text: `跳过缺少 name 的插件条目`, level: 'error' })
+        notes.push({ text: '跳过缺少 name 的插件条目', level: 'error' })
         continue
       }
+      // 包内同 name 只吸收一次（交集去重在吸收层完成）
+      if (seenNames.has(name)) continue
+      seenNames.add(name)
+
       const src = safeStagePath(root, plugin.path || join('plugins', ...name.split('/')))
       try {
         readPkg(src)
@@ -409,34 +549,61 @@ async function preparePackFromStage(paths: ResolvedPaths, root: string, opts: In
         notes.push({ text: `插件目录无效: ${name}: ${messageOf(error)}`, level: 'error' })
         continue
       }
-      if (isInstalled(paths, name)) {
-        notes.push({ text: `已安装，跳过准备: ${name}`, level: 'warn' })
-        const existingDir = resolveInstalledDir(paths, name) || src
-        preparedPlugins.push({ name, dir: existingDir })
+
+      const installed = readInstalledInfo(paths, name)
+
+      // 安全交集快速路径：已装同版本且内容哈希一致 → 直接用已装实体，
+      // 不复制进 store、不重复构建；最终决策仍由激活阶段的 InstallPlan 确认。
+      if (installed && plugin.version && installed.version === plugin.version && plugin.sha256) {
+        const installedHash = sha256OfDir(installed.dir)
+        if (installedHash === plugin.sha256) {
+          candidates.push({ name, dir: installed.dir, version: installed.version, sha256: installedHash, existed: true })
+          step(`安全交集：已装同版本同内容 ${name}@${installed.version}，复用现有实体`)
+          continue
+        }
+      }
+
+      let absorbed
+      try {
+        // v2 先校验内容哈希，再吸收进 PluginStore；v1 无哈希直接吸收
+        absorbed = absorbPlugin(paths, src, name, plugin.version, isV2 ? plugin.sha256 : undefined)
+      } catch (error) {
+        notes.push({ text: `插件内容校验/吸收失败: ${name}: ${messageOf(error)}`, level: 'error' })
         continue
       }
-      const dest = join(paths.pluginsDir, ...name.split('/'))
+
       try {
-        rmSync(dest, { recursive: true, force: true })
-        mkdirSync(dirname(dest), { recursive: true })
-        cpSync(src, dest, { recursive: true })
-        step(`安装插件包成员: ${name}`)
-        prepareDir(dest, opts, step)
-        preparedPlugins.push({ name, dir: dest })
+        if (absorbed.existed) {
+          step(`PluginStore 交集去重: ${name}@${absorbed.version}（${absorbed.sha256.slice(0, 12)}… 已存在，复用实体）`)
+        } else {
+          step(`已吸收进 PluginStore: ${name}@${absorbed.version}（${absorbed.sha256.slice(0, 12)}…）`)
+        }
+        // 已装但版本/内容不同：不再构建（避免执行无关脚本），交给激活阶段裁决冲突；
+        // 未装才走依赖 + 构建准备。
+        if (installed) {
+          notes.push({ text: `${name}: 已安装版本 ${installed.version || '未知'}，包内版本 ${absorbed.version}——将进入装配计划裁决（不静默覆盖）。`, level: 'warn' })
+        } else {
+          // 缺 lib 时按授权构建（与单插件安装同一安全策略）；失败只跳过该成员
+          prepareDir(absorbed.dir, opts, step)
+        }
+        candidates.push({ name, dir: absorbed.dir, version: absorbed.version, sha256: absorbed.sha256, existed: absorbed.existed })
       } catch (error) {
         notes.push({ text: `插件包成员准备失败: ${name}: ${messageOf(error)}`, level: 'error' })
       }
     }
   }
 
+  // 权威 dry-run 计划在 activatePrepared 阶段基于真实运行树构建；
+  // 这里先把「已准备成功」的候选交给激活阶段，由它做交集裁决。
+  const toActivate = candidates.map((candidate) => candidate.dir)
   return {
     kind: 'pack',
     name: 'pack:' + packPkg.name,
     dir: root,
-    plugins: preparedPlugins.map((p) => p.dir),
+    plugins: toActivate,
     presets: [],
     notes,
-    pack: { groups, plugins: preparedPlugins },
+    pack: { groups, plugins: candidates },
   }
 }
 
@@ -614,6 +781,10 @@ export async function prepareSource(paths: ResolvedPaths, source: string, opts: 
 /**
  * 写 profile bundles + junction + loader.create。
  * 必须由队列串行调用：共享 profile package.json 与 loader 树。
+ *
+ * kind==='pack' 时先基于真实运行树构建权威 InstallPlan（dry-run），
+ * 只激活 plan 裁决为 install 的插件；执行是包级事务：任一插件装配失败，
+ * 本轮已成功装配的插件按逆序整体回滚。
  */
 export async function activatePrepared(
   ctx: Context,
@@ -623,13 +794,45 @@ export async function activatePrepared(
 ): Promise<InstallResult[]> {
   const step = opts.onStep ?? (() => {})
   const results: InstallResult[] = []
-  for (const dir of prepared.plugins) {
+  const activatedThisRun: Array<{ name: string; entryId?: string; dir: string }> = []
+
+  // 插件包：权威 dry-run 计划（在吸收/准备完成之后，基于当前运行树构建）
+  let plan = prepared.plan
+  if (prepared.kind === 'pack') {
+    const candidates = prepared.pack?.plugins ?? []
+    plan = buildInstallPlan(ctx, paths, candidates)
+    prepared.plan = plan
+    step(`插件包装配计划（${plan.items.length} 个成员：安装 ${plan.toActivate.length} / 跳过 ${plan.items.filter((i) => i.decision === 'skip-installed').length} / 冲突 ${plan.items.filter((i) => i.decision === 'conflict').length}）`)
+    for (const item of plan.items) {
+      step(`[${item.decision}] ${item.identity.name}@${item.identity.version}: ${item.reason}`, item.level)
+      if (item.decision === 'skip-installed') {
+        results.push({ name: item.identity.name, entryId: '', dir: item.dir, message: item.reason })
+      } else if (item.decision === 'conflict') {
+        results.push({ name: item.identity.name, entryId: '', dir: item.dir, message: `跳过：${item.reason}` })
+      }
+    }
+    if (plan.allSkipped) {
+      step('插件包没有需要装配的成员（全部已安装或存在冲突），激活阶段结束', 'warn')
+    }
+  }
+
+  const activateDirs = prepared.kind === 'pack' ? (plan?.toActivate ?? []) : prepared.plugins
+
+  for (const dir of activateDirs) {
     const pkg = readPkg(dir)
-    if (isInstalled(paths, pkg.name)) {
+    // 单插件 / 套装仍保留按 name 的已装检查；插件包已由 plan 裁决
+    if (prepared.kind !== 'pack' && isInstalled(paths, pkg.name)) {
       step(`已安装，跳过: ${pkg.name}`, 'warn')
       results.push({ name: pkg.name, entryId: '', dir, message: `「${pkg.name}」已在 bundles 中，跳过` })
       continue
     }
+
+    // 尊重卸载意图：显式重新安装会清除旧 disabled 覆盖（不静默复活，也不永久阻断）
+    if (readPatchDisabledIds(paths.patchPath).has(pkg.name)) {
+      step(`清除旧 disabled 覆盖（显式重新安装）: ${pkg.name}`, 'warn')
+      writePatchDisabled(paths.patchPath, pkg.name, false)
+    }
+
     const entryFile = resolve(dir, pkg.main || 'lib/index.js')
     if (!existsSync(entryFile)) throw new Error(`找不到插件入口: ${entryFile}（package.json main 或 lib/index.js）`)
     opts.onProgress?.(88)
@@ -652,6 +855,7 @@ export async function activatePrepared(
       // 由 include 在装配 bundles 时应用它的 cordis.patch.yml（重启生效）。
       step(`配置层插件（bundle-only），已写入 bundles，重启后由 include 装配其 patch`, 'warn')
       opts.onProgress?.(100)
+      activatedThisRun.push({ name: pkg.name, dir })
       results.push({
         name: pkg.name,
         entryId: '',
@@ -674,10 +878,11 @@ export async function activatePrepared(
       const loader = ctx.loader as Loader
       entryId = await loader.create({ id: pkg.name, name: entryFile } as never)
     } catch (error) {
-      try { rmSync(join(paths.profileDir, 'node_modules', ...pkg.name.split('/')), { recursive: true, force: true }) } catch {}
-      try { removeBundle(paths.packagePath, pkg.name) } catch {}
-      throw new Error(`装配失败（已回滚配置）: ${messageOf(error)}`)
+      // 包级事务回滚：当前失败项 + 本轮已成功的全部逆操作
+      await rollbackActivated(ctx, paths, [{ name: pkg.name, dir }, ...activatedThisRun])
+      throw new Error(`装配失败（已整体回滚本插件包）: ${messageOf(error)}`)
     }
+    activatedThisRun.push({ name: pkg.name, entryId: String(entryId), dir })
     opts.onProgress?.(100)
     step(`装配成功: ${pkg.name}`, 'ok')
     results.push({
@@ -692,6 +897,34 @@ export async function activatePrepared(
   }
   for (const note of prepared.notes) step(note.text, note.level)
   return results
+}
+
+/** 包级事务回滚：逆序卸载本轮已装配的插件，并清除 bundles / junction */
+async function rollbackActivated(
+  ctx: Context,
+  paths: ResolvedPaths,
+  installed: Array<{ name: string; entryId?: string; dir: string }>,
+): Promise<void> {
+  const loader = ctx.loader as Loader
+  for (const item of [...installed].reverse()) {
+    // loader.create 失败的当前项可能没有返回 entryId，但 entry id 就是我们请求的包名
+    const id = item.entryId || item.name
+    try {
+      await loader.remove(id)
+    } catch {
+      // 移除失败（entry 可能不存在）不阻断后续清理
+    }
+    try {
+      removeBundle(paths.packagePath, item.name)
+    } catch {
+      // 已移除则忽略
+    }
+    try {
+      rmSync(join(paths.profileDir, 'node_modules', ...item.name.split('/')), { recursive: true, force: true })
+    } catch {
+      // 已删除则忽略
+    }
+  }
 }
 
 function ensureJunction(paths: ResolvedPaths, name: string, target: string): void {
@@ -719,10 +952,13 @@ function removeBundle(path: string, bundleName: string): boolean {
 // ═══════════════════════ M4 插件包导出 ═══════════════════════
 
 /**
- * 把若干分组导出为 DSH 插件包（.tgz）：
+ * 把若干分组导出为 DSH 插件包 v2（.tgz）：
  *   package.json（合成元数据，供 M2 识别）
- *   manifest.yml（分组 + 插件清单 + sha256）
+ *   manifest.yml（分组 + 插件清单 + version + sha256，导入时校验）
  *   plugins/<包名>/（插件目录本体，排除 node_modules/.git）
+ *
+ * 同一插件出现在多个选中分组时只内嵌一份（seen 去重）；
+ * manifest 中每个分组独立声明引用，因此交集是引用交集，不产生副本。
  */
 export async function exportPack(
   paths: ResolvedPaths,
@@ -759,19 +995,23 @@ export async function exportPack(
   mkdirSync(pluginsStage, { recursive: true })
 
   try {
+    // 先按插件名复制与哈希（每个实体只做一次），再让各分组声明引用。
+    // 这就是交集处理在导出端的落地：物理内嵌去重，逻辑引用保留全集。
+    const pluginEntries = new Map<string, { name: string; path: string; version: string; sha256: string }>()
+    for (const [pluginName, sourceDir] of pluginDirs) {
+      const target = join(pluginsStage, ...pluginName.split('/'))
+      copyTreeExclude(sourceDir, target)
+      pluginEntries.set(pluginName, {
+        name: pluginName,
+        path: posixPath(join('plugins', ...pluginName.split('/'))),
+        version: readVersion(sourceDir) ?? '0.0.0-unknown',
+        sha256: sha256OfDir(target),
+      })
+    }
     const manifestGroups: PackGroup[] = activeGroups.map((group) => ({
       name: group.name,
       desired: group.desired,
-      plugins: group.plugins.map((pluginName) => {
-        const target = join(pluginsStage, ...pluginName.split('/'))
-        copyTreeExclude(pluginDirs.get(pluginName)!, target)
-        const sha256 = sha256OfDir(target)
-        return {
-          name: pluginName,
-          path: posixPath(join('plugins', ...pluginName.split('/'))),
-          sha256,
-        }
-      }),
+      plugins: group.plugins.map((pluginName) => ({ ...pluginEntries.get(pluginName)! })),
     }))
 
     const pkgJson = {
@@ -781,7 +1021,7 @@ export async function exportPack(
       description: `DSH 插件包：${activeGroups.map((g) => g.name).join('、')}（由插件管理导出）`,
       dsh: {
         pack: {
-          format: 'dsh-plugin-pack@1',
+          format: 'dsh-plugin-pack@2',
           manifest: 'manifest.yml',
         },
       },
@@ -789,8 +1029,8 @@ export async function exportPack(
     const manifest = {
       pack: {
         name: safeName,
-        version: '1.0.0',
-        format: 'dsh-plugin-pack@1',
+        version: '2.0.0',
+        format: 'dsh-plugin-pack@2',
         exportedAt: new Date(stamp).toISOString(),
         profile: paths.profile,
       },

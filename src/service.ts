@@ -15,6 +15,7 @@ import {
   prepareSource,
   prepareTgz,
   prepareUpdate,
+  resolveInstalledDir,
   type InstallOptions,
   type InstallResult,
   type Prepared,
@@ -22,11 +23,12 @@ import {
 import { InstallQueue, type InstallTask, type TaskContext } from './tasks.js'
 import {
   deleteGroup,
-  groupOfPlugin,
+  groupsOfPlugin,
   readGroups,
   upsertGroup,
   type PluginGroup,
 } from './groups.js'
+import { readVersion } from './store.js'
 import {
   messageOf,
   pendingOf,
@@ -159,6 +161,12 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       if (change) {
         desired = change.op === 'disable' ? 'disabled' : change.op === 'enable' ? 'enabled' : 'removed'
       }
+      const pluginGroups = groupsOfPlugin(groups, name)
+      let version: string | undefined
+      if (source === 'user') {
+        const installedDir = resolveInstalledDir(paths, name)
+        if (installedDir) version = readVersion(installedDir)
+      }
       items.push({
         id,
         name,
@@ -168,7 +176,9 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
         pending: change !== undefined,
         uninstallable: source !== 'native',
         ephemeral: source === 'injected' ? '临时注入，重启后自动消失；不能持久禁用/卸载' : undefined,
-        group: groupOfPlugin(groups, name)?.name,
+        group: pluginGroups[0],
+        groups: pluginGroups,
+        version,
       })
     }
 
@@ -231,26 +241,45 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
 
   /** 插件包安装后恢复分组；并对 desired != as-is 的组写 pending（重启后整组生效） */
   function applyPackGroups(groups: PluginGroup[], onStep: (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => void): void {
+    // 只恢复「确实存在」的成员：已装配成功、交集去重跳过、或此前已装。
+    // 被 InstallPlan 判定为冲突（版本/内容/entry id）而未装的成员不得成为幽灵分组。
+    const installedNames = new Set(readUserBundles(paths.packagePath).map((b) => b.name))
+    for (const entry of loader.entries()) {
+      if (!entry.options.group) installedNames.add(entry.options.name)
+    }
     for (const group of groups) {
-      upsertGroup(paths.groupsPath, group)
+      upsertGroup(paths.groupsPath, {
+        ...group,
+        plugins: group.plugins.filter((name) => installedNames.has(name)),
+      })
     }
     const all = readGroups(paths.groupsPath)
-    let applied = 0
+    // 多归属下同一插件可能在不同组声明不同 desired：
+    // 采用安全向策略 —— disabled 优先（不让「期望启用」覆盖「期望禁用」）。
+    const desiredMap = new Map<string, 'enable' | 'disable'>()
     for (const group of all) {
       if (group.desired === 'as-is') continue
+      const op = group.desired === 'enabled' ? 'enable' as const : 'disable' as const
       for (const pluginName of group.plugins) {
-        const entry = [...loader.entries()].find((e) => !e.options.group && e.options.name === pluginName)
-        if (!entry) continue // bundle-only / 尚未进入运行树：重启后由 include 装配
-        upsertPending(paths.pendingPath, {
-          id: entry.id,
-          op: group.desired === 'enabled' ? 'enable' : 'disable',
-          ts: Date.now(),
-        })
-        applied++
+        const previous = desiredMap.get(pluginName)
+        if (previous === undefined || op === 'disable') {
+          desiredMap.set(pluginName, op)
+        }
       }
     }
+    let applied = 0
+    for (const [pluginName, op] of desiredMap) {
+      const entry = [...loader.entries()].find((e) => !e.options.group && e.options.name === pluginName)
+      if (!entry) continue // bundle-only / 尚未进入运行树：重启后由 include 装配
+      upsertPending(paths.pendingPath, {
+        id: entry.id,
+        op,
+        ts: Date.now(),
+      })
+      applied++
+    }
     if (applied > 0) {
-      onStep(`已恢复分组；已为 ${applied} 个运行中插件写入待重启状态（重启后按组生效）`, 'ok')
+      onStep(`已恢复分组；已为 ${applied} 个运行中插件写入待重启状态（重启后按组生效；多组 desired 冲突时禁用优先）`, 'ok')
     } else {
       onStep('已恢复分组（组内插件将在重启装配后按 desired 状态生效）', 'ok')
     }

@@ -171,6 +171,20 @@ export function readPatchInsertIds(path: string): Set<string> {
   return ids
 }
 
+/** 读出 patch 顶层 `disabled: true` 的条目 id 集合（用于冲突预检与卸载意图判断） */
+export function readPatchDisabledIds(path: string): Set<string> {
+  const ids = new Set<string>()
+  if (!existsSync(path)) return ids
+  const doc = readPatchDocument(path)
+  for (const item of topSeq(doc).items) {
+    if (!isMap(item)) continue
+    const id = String(item.get('id') ?? '')
+    const disabled = (item.get('disabled') as { value?: unknown } | null)?.value
+    if (id && disabled === true) ids.add(id)
+  }
+  return ids
+}
+
 /**
  * 从 patch 的 insert 子列表中删除一个插件行（用户插件的持久卸载）。
  * insert 列表清空后整条 insert 也一并删除。

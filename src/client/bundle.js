@@ -33,6 +33,7 @@ window.__ModuleLoader__.load({
 .pm-badge.inj{color:#f1c40f}
 .pm-badge.warn{color:#f1c40f}
 .pm-badge.group{color:#b78bfa}
+.pm-badge.ver{color:#7fd4c1}
 .pm-groups-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pm-group-chip{display:inline-flex;align-items:center;gap:6px;background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 8px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary)}
 .pm-group-chip.on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
@@ -211,7 +212,11 @@ window.__ModuleLoader__.load({
           jsx('div', {
             className: 'pm-plugin-card-badges',
             children: [
-              item.group ? jsx('span', { className: 'pm-badge group', children: '▣ ' + item.group }) : null,
+              (item.groups || []).slice(0, 3).map((g) => jsx('span', { key: g, className: 'pm-badge group', children: '▣ ' + g })),
+              item.groups && item.groups.length > 3
+                ? jsx('span', { className: 'pm-badge group', children: '▣ +' + (item.groups.length - 3) })
+                : null,
+              item.version ? jsx('span', { className: 'pm-badge ver', children: 'v' + item.version }) : null,
               pendingText(item),
             ],
           }),
@@ -566,15 +571,16 @@ window.__ModuleLoader__.load({
       const items = (data && data.items) || []
       const groups = (data && data.groups) || []
       const nativeAll = items.filter((i) => i.source === 'native')
-      const userAll = items.filter((i) => i.source !== 'native' && !i.group) // 未分组 user + injected
+      const userAll = items.filter((i) => i.source !== 'native' && !(i.groups && i.groups.length)) // 未分组 user + injected
       const pendingCount = items.filter((i) => i.pending).length
 
       const q = search.trim().toLowerCase()
       const match = (i) => !q || displayId(i).toLowerCase().includes(q) || i.name.toLowerCase().includes(q) || i.id.toLowerCase().includes(q)
+      const groupsOf = (i) => (i.groups && i.groups.length ? i.groups : [])
       const matchGroup = (i) => {
         if (!groupFilter) return true
-        if (groupFilter === '__none') return !i.group
-        return i.group === groupFilter
+        if (groupFilter === '__none') return groupsOf(i).length === 0
+        return groupsOf(i).includes(groupFilter)
       }
       const nativeItems = nativeAll.filter((i) => match(i) && matchGroup(i))
       const userItems = userAll.filter((i) => match(i) && matchGroup(i))
@@ -693,7 +699,7 @@ window.__ModuleLoader__.load({
                   group('user', '用户（未分组）', userAll, userItems),
                 ].concat(
                   groups.map((g) => {
-                    const all = items.filter((i) => i.group === g.name)
+                    const all = items.filter((i) => groupsOf(i).includes(g.name))
                     const filtered = all.filter((i) => match(i) && matchGroup(i))
                     return group(g.name, '▣ ' + g.name, all, filtered, groupSectionExtra(g))
                   }),
@@ -731,7 +737,7 @@ window.__ModuleLoader__.load({
         }
         const plugins = selectedNames
         if (!plugins.length) {
-          setMsg({ text: '请先勾选要加入分组的插件（可勾选未分组插件，或勾选其它组插件以移动）', isErr: true })
+          setMsg({ text: '请先勾选要加入分组的插件（一个插件可以同时属于多个分组）', isErr: true })
           return
         }
         setBusy('save')
@@ -741,7 +747,7 @@ window.__ModuleLoader__.load({
               setMsg({ text: (r && r.error) || '保存分组失败', isErr: true })
               return
             }
-            setMsg({ text: '已保存分组「' + name + '」（' + plugins.length + ' 个插件；一个插件只属于一个分组）', isErr: false })
+            setMsg({ text: '已保存分组「' + name + '」（' + plugins.length + ' 个插件；多归属，交集在导出时自动去重）', isErr: false })
             setSelected({})
             if (onRefresh) onRefresh()
           })
@@ -846,7 +852,10 @@ window.__ModuleLoader__.load({
                 }),
                 jsx('span', { className: 'pm-plugin-card-title', title: item.name, children: displayId(item) }),
                 item.running.enabled ? null : jsx('span', { className: 'pm-st off', children: '已禁用' }),
-                item.group ? jsx('span', { className: 'pm-badge group', children: '▣ ' + item.group }) : null,
+                (item.groups || []).slice(0, 2).map((g) => jsx('span', { key: g, className: 'pm-badge group', children: '▣ ' + g })),
+                item.groups && item.groups.length > 2
+                  ? jsx('span', { className: 'pm-badge group', children: '▣ +' + (item.groups.length - 2) })
+                  : null,
               ],
             }),
             jsx('div', { className: 'pm-mod', children: item.name }),
@@ -892,7 +901,7 @@ window.__ModuleLoader__.load({
                   }),
                 ],
               }),
-              jsx('p', { className: 'pm-hint', children: '勾选的插件会加入上面填写的分组；若这些插件已在其它分组，会自动移动过来（一个插件只属于一个分组）。' }),
+              jsx('p', { className: 'pm-hint', children: '勾选的插件会加入上面填写的分组；插件可以同时属于多个分组，导出插件包时交集只内嵌一份。' }),
               userItems.length === 0
                 ? jsx('p', { className: 'pm-empty', children: '（没有用户插件）' })
                 : jsx('div', { className: 'pm-plugin-grid', children: userItems.map(pluginRow) }),
