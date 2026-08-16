@@ -331,12 +331,16 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     return set
   }
 
-  /** 按分组成员名（bundle 包名或旧运行名）查找运行 entry */
+  /** 按分组成员名（bundle 包名或旧运行名）查找运行 entry；只匹配用户插件 entry */
   function entryByGroupMember(pluginName: string) {
     const bundles = readUserBundles(paths.packagePath)
+    const patchIds = readPatchInsertIds(paths.patchPath)
     const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
     return [...loader.entries()].find((entry) => {
       if (entry.options.group) return false
+      // 分组只属于用户 bundle：不能把同名原生 entry（如官方 skill-filesystem）
+      // 经 bundleInserts 反查后误当成用户插件 archify 的目标。
+      if (classify(entry.id, entry.options.name, bundles, patchIds, bundleInserts) !== 'user') return false
       if (entry.options.name === pluginName) return true
       return resolveBundleName(entry.options.name, entry.id, bundles, bundleInserts) === pluginName
     })
