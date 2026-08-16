@@ -13,6 +13,8 @@ export interface PendingChange {
   ts: number
   /** 仅 uninstall 有：撤销信息 */
   undo?: UninstallUndo
+  /** disable/uninstall 生效时一并删除的本地 Agent 预设 id */
+  presetIds?: string[]
 }
 
 /** loader entry tree 里一条 entry 的运行投影 */
@@ -32,6 +34,8 @@ export interface PluginItem {
   desired: DesiredState
   /** 是否有未生效的待重启变更 */
   pending: boolean
+  /** 该变更生效时将一并删除的本地 Agent 预设 id */
+  pendingPresets: string[]
   /** 是否允许持久卸载（官方插件不允许） */
   uninstallable: boolean
   /** 临时注入提示 */

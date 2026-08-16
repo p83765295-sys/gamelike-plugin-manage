@@ -160,6 +160,7 @@ window.__ModuleLoader__.load({
       'pending.uninstall': '待重启卸载',
       'pending.disable': '待重启禁用',
       'pending.enable': '待重启启用',
+      'pending.presets': '重启后删除 {count} 个本地预设',
       'pending.count': '待重启 {count}',
       'action.enable': '启用',
       'action.disable': '禁用',
@@ -291,6 +292,7 @@ window.__ModuleLoader__.load({
       'pending.uninstall': 'uninstall on restart',
       'pending.disable': 'disable on restart',
       'pending.enable': 'enable on restart',
+      'pending.presets': '{count} local preset(s) removed on restart',
       'pending.count': '{count} pending',
       'action.enable': 'Enable',
       'action.disable': 'Disable',
@@ -457,7 +459,10 @@ window.__ModuleLoader__.load({
     function pendingText(t, item) {
       if (!item.pending) return null
       const key = item.desired === 'removed' ? 'pending.uninstall' : item.desired === 'disabled' ? 'pending.disable' : 'pending.enable'
-      return jsx('span', { className: 'pm-st pending', children: t(key) })
+      const label = (item.pendingPresets && item.pendingPresets.length > 0)
+        ? t(key) + ' · ' + t('pending.presets', { count: item.pendingPresets.length })
+        : t(key)
+      return jsx('span', { className: 'pm-st pending', children: label })
     }
 
     /** 官方 PluginCard 模式：li > button 折叠头 + body + footer，单列列表 */

@@ -23,6 +23,11 @@ import {
 } from './installer.js'
 import { InstallQueue, type InstallTask, type TaskContext } from './tasks.js'
 import {
+  agentPresetsOf,
+  ownedPresetIdsForBundle,
+  removeOwnedPresets,
+} from './presets.js'
+import {
   deleteGroup,
   readGroups,
   upsertGroup,
@@ -197,6 +202,7 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
         running,
         desired,
         pending: change !== undefined,
+        pendingPresets: change?.presetIds ?? [],
         uninstallable: source !== 'native',
         ephemeral: source === 'injected' ? '临时注入，重启后自动消失；不能持久禁用/卸载' : undefined,
         group: pluginGroups[0],
@@ -336,6 +342,45 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     })
   }
 
+  function logInfo(message: string): void {
+    try {
+      ;(ctx as unknown as { logger?: (name: string) => { info?(msg: string): void; warn?(msg: string): void } })
+        .logger?.('plugin-manage')?.info?.(message)
+    } catch {
+      // logger 不可用时静默
+    }
+  }
+
+  function presetService() {
+    return agentPresetsOf(ctx)
+  }
+
+  async function presetIdsForBundle(bundleName: string): Promise<string[]> {
+    const service = presetService()
+    if (!service) return []
+    try {
+      return ownedPresetIdsForBundle(paths, await service.list(), bundleName)
+    } catch (error) {
+      logInfo(`读取 ${bundleName} 的 Agent 预设归属失败: ${messageOf(error)}`)
+      return []
+    }
+  }
+
+  async function presetIdsForEntry(id: string, name: string): Promise<string[]> {
+    const bundles = readUserBundles(paths.packagePath)
+    const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
+    return presetIdsForBundle(resolveBundleName(name, id, bundles, bundleInserts))
+  }
+
+  async function removePresetsByIds(presetIds: string[]): Promise<void> {
+    if (presetIds.length === 0) return
+    const service = presetService()
+    if (!service) return
+    const result = await removeOwnedPresets(service, presetIds)
+    if (result.removed.length > 0) logInfo(`已删除随插件变更移除的 Agent 预设: ${result.removed.join(', ')}`)
+    for (const failure of result.failed) logInfo(`删除 Agent 预设失败 ${failure.id}: ${failure.error}`)
+  }
+
   return {
     list,
 
@@ -355,15 +400,22 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     },
 
     async disable(id: string): Promise<ActionOk> {
-      const { source, enabled } = requireRunning(id)
+      const { name, source, enabled } = requireRunning(id)
       if (!enabled) {
         return { id, op: 'disable', message: `「${id}」当前已处于禁用状态，无需重启。` }
       }
-      const pending = upsertPending(paths.pendingPath, { id, op: 'disable', ts: Date.now() })
+      const presetIds = await presetIdsForEntry(id, name)
+      const pending = upsertPending(paths.pendingPath, {
+        id,
+        op: 'disable',
+        ts: Date.now(),
+        ...(presetIds.length > 0 ? { presetIds } : {}),
+      })
+      const presetNote = presetIds.length > 0 ? `；重启后还会删除 ${presetIds.length} 个该插件拥有的本地 Agent 预设` : ''
       return {
         id,
         op: 'disable',
-        message: `已记录待重启操作：禁用「${id}」（来源: ${source}）。当前运行不变，重启 DSH 后生效；再次重启前可随时取消。待重启项共 ${pending.length} 条。`,
+        message: `已记录待重启操作：禁用「${id}」（来源: ${source}）。当前运行不变，重启 DSH 后生效；再次重启前可随时取消。待重启项共 ${pending.length} 条。${presetNote}`,
       }
     },
 
@@ -383,11 +435,18 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     async uninstall(id: string): Promise<ActionOk> {
       const { name, source } = requireRunning(id)
       if (source === 'native') throw new Error(`"${id}" 是原生插件，不允许卸载（只能禁用）`)
-      const pending = upsertPending(paths.pendingPath, { id, op: 'uninstall', ts: Date.now() })
+      const presetIds = await presetIdsForEntry(id, name)
+      const pending = upsertPending(paths.pendingPath, {
+        id,
+        op: 'uninstall',
+        ts: Date.now(),
+        ...(presetIds.length > 0 ? { presetIds } : {}),
+      })
+      const presetNote = presetIds.length > 0 ? `；重启后还会删除 ${presetIds.length} 个该插件拥有的本地 Agent 预设` : ''
       return {
         id,
         op: 'uninstall',
-        message: `已记录待重启操作：卸载「${id}」（${name}）。当前运行不变，重启 DSH 后生效；未重启前可在列表里「取消卸载」。待重启项共 ${pending.length} 条。`,
+        message: `已记录待重启操作：卸载「${id}」（${name}）。当前运行不变，重启 DSH 后生效；未重启前可在列表里「取消卸载」。待重启项共 ${pending.length} 条。${presetNote}`,
       }
     },
 
@@ -444,6 +503,9 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
               done = removePatchInsert(paths.patchPath, patchId) || removePatchInsert(paths.patchPath, change.id) || done
             }
             if (!done) throw new Error(`pending uninstall ${change.id}: 无法定位持久装配记录`)
+          }
+          if ((change.op === 'disable' || change.op === 'uninstall') && change.presetIds !== undefined && change.presetIds.length > 0) {
+            await removePresetsByIds(change.presetIds)
           }
         } catch (error) {
           ;(ctx as unknown as { logger?: (name: string) => { error?(msg: string): void } })
@@ -522,6 +584,7 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
       }
       let found = 0
       let changed = 0
+      let presetTotal = 0
       for (const pluginName of canonical) {
         if (!users.has(pluginName)) continue
         const entry = entryByGroupMember(pluginName)
@@ -530,15 +593,23 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
         const enabled = !entry.disabled
         // 已处于目标状态的插件不写 pending，避免 UI 出现"看似需要重启"的误导
         if (op === 'disable' ? !enabled : enabled) continue
-        upsertPending(paths.pendingPath, { id: entry.id, op, ts: Date.now() })
+        const presetIds = op === 'disable' ? await presetIdsForBundle(pluginName) : []
+        presetTotal += presetIds.length
+        upsertPending(paths.pendingPath, {
+          id: entry.id,
+          op,
+          ts: Date.now(),
+          ...(presetIds.length > 0 ? { presetIds } : {}),
+        })
         changed++
       }
       if (found === 0) throw new Error(`分组「${name}」没有可操作的用户插件（可能尚未装配）`)
       if (changed > 0) {
+        const presetNote = presetTotal > 0 ? `；重启后还会删除 ${presetTotal} 个相关本地 Agent 预设` : ''
         return {
           id: name,
           op,
-          message: `已记录待重启操作：${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${changed} 个插件。当前运行不变，重启 DSH 后生效。`,
+          message: `已记录待重启操作：${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${changed} 个插件。当前运行不变，重启 DSH 后生效。${presetNote}`,
         }
       }
       return {

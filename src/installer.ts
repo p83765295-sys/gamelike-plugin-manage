@@ -18,6 +18,7 @@ import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
 import { addBundle, messageOf, readBundleInsertMap, readPatchDisabledIds, readPatchInsertIds, readUserBundles, writePatchDisabled } from './profile.js'
 import { absorbPlugin, copyTreeExclude, posixPath, readBundlePatchRel, readVersion, sha256OfDir } from './store.js'
+import { writePluginManageOwnerMarker } from './presets.js'
 import type { ExportPackResult, InstallPlan, PackGroup, PlanItem, PluginGroup, PluginIdentity } from './types.js'
 
 export type StepFn = (text: string, level?: 'info' | 'ok' | 'warn' | 'error') => void
@@ -627,12 +628,37 @@ export function prepareUpdate(paths: ResolvedPaths, pluginName: string, opts: In
   return { kind: 'single', name: pluginName, dir, plugins: [dir], presets: [], notes: [] }
 }
 
+/** 读取预设组成里的插件名（仅用于给复制的预设写归属标记，不做归属裁决） */
+function presetOwnerNamesFromComposition(presetDir: string): string[] {
+  const composition = join(presetDir, 'agent.cordis.yml')
+  if (!existsSync(composition)) return []
+  try {
+    const doc = parseDocument(readFileSync(composition, 'utf8'))
+    if (doc.errors.length) return []
+    const names = new Set<string>()
+    const walk = (rows: unknown): void => {
+      if (!Array.isArray(rows)) return
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue
+        const entry = row as { name?: unknown; group?: unknown; config?: unknown }
+        if (typeof entry.name === 'string' && entry.name) names.add(entry.name)
+        if (entry.group === true) walk(entry.config)
+      }
+    }
+    walk(doc.toJS())
+    return [...names]
+  } catch {
+    return []
+  }
+}
+
 /** 复制一个声明式预设目录到 ~/.dsh/.agent-presets/<basename>；已存在则跳过（不覆盖） */
 function copyPreset(paths: ResolvedPaths, src: string): string {
   const id = basename(src)
   const dest = join(paths.home, '.agent-presets', id)
   if (existsSync(dest)) return `预设已存在，跳过: ${id}`
   cpSync(src, dest, { recursive: true })
+  writePluginManageOwnerMarker(dest, presetOwnerNamesFromComposition(src))
   return `已安装预设: ${id} → ${dest}`
 }
 
