@@ -222,7 +222,7 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     }
   }
 
-  function requireRunning(id: string): { name: string; source: PluginSource; patchId: string } {
+  function requireRunning(id: string): { name: string; source: PluginSource; patchId: string; enabled: boolean } {
     const entry = [...loader.entries()].find((e) => !e.options.group && e.id === id)
     if (!entry) throw new Error(`运行树中没有插件: ${id}`)
     const bundles = readUserBundles(paths.packagePath)
@@ -232,7 +232,7 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     if (source === 'injected') {
       throw new Error(`"${id}" 是临时注入插件（重启后自动消失），不能持久操作`)
     }
-    return { name: entry.options.name, source, patchId: patchIdOf(id) }
+    return { name: entry.options.name, source, patchId: patchIdOf(id), enabled: !entry.disabled }
   }
 
   function enqueue(
@@ -295,6 +295,8 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     for (const [pluginName, op] of desiredMap) {
       const entry = entryByGroupMember(pluginName)
       if (!entry) continue // bundle-only / 尚未进入运行树：重启后由 include 装配
+      const enabled = !entry.disabled
+      if (op === 'disable' ? !enabled : enabled) continue // 已处于目标状态
       upsertPending(paths.pendingPath, {
         id: entry.id,
         op,
@@ -353,7 +355,10 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     },
 
     async disable(id: string): Promise<ActionOk> {
-      const { source } = requireRunning(id)
+      const { source, enabled } = requireRunning(id)
+      if (!enabled) {
+        return { id, op: 'disable', message: `「${id}」当前已处于禁用状态，无需重启。` }
+      }
       const pending = upsertPending(paths.pendingPath, { id, op: 'disable', ts: Date.now() })
       return {
         id,
@@ -363,7 +368,10 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     },
 
     async enable(id: string): Promise<ActionOk> {
-      const { source } = requireRunning(id)
+      const { source, enabled } = requireRunning(id)
+      if (enabled) {
+        return { id, op: 'enable', message: `「${id}」当前已处于启用状态，无需重启。` }
+      }
       const pending = upsertPending(paths.pendingPath, { id, op: 'enable', ts: Date.now() })
       return {
         id,
@@ -504,20 +512,34 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
       if (!group) throw new Error(`没有分组: ${name}`)
       if (group.plugins.length === 0) throw new Error(`分组「${name}」没有插件`)
       const users = userNames()
-      let count = 0
+      let found = 0
+      let changed = 0
       for (const pluginName of group.plugins) {
         if (!users.has(pluginName)) continue
         const entry = entryByGroupMember(pluginName)
         if (!entry) continue
+        found++
+        const enabled = !entry.disabled
+        // 已处于目标状态的插件不写 pending，避免 UI 出现"看似需要重启"的误导
+        if (op === 'disable' ? !enabled : enabled) continue
         upsertPending(paths.pendingPath, { id: entry.id, op, ts: Date.now() })
-        count++
+        changed++
       }
-      if (count === 0) throw new Error(`分组「${name}」没有可操作的用户插件（可能尚未装配）`)
-      return {
-        id: name,
-        op,
-        message: `已记录待重启操作：${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${count} 个插件。当前运行不变，重启 DSH 后生效。`,
+      if (changed > 0) {
+        return {
+          id: name,
+          op,
+          message: `已记录待重启操作：${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${changed} 个插件。当前运行不变，重启 DSH 后生效。`,
+        }
       }
+      if (found > 0) {
+        return {
+          id: name,
+          op,
+          message: `分组「${name}」的全部 ${found} 个插件已处于目标状态，无需重启。`,
+        }
+      }
+      throw new Error(`分组「${name}」没有可操作的用户插件（可能尚未装配）`)
     },
 
     async exportPack(packName: string, groupNames: string[]): Promise<ExportPackResult> {
