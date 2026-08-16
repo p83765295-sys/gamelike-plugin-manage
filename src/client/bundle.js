@@ -49,6 +49,14 @@ window.__ModuleLoader__.load({
 .pm-group-title{font-size:13px;font-weight:600;line-height:1.5}
 .pm-group-count{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}
 .pm-list{list-style:none;margin:0;padding:0 0 0 20px}
+.pm-plugin-grid{list-style:none;margin:0;padding:0 0 0 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px}
+.pm-plugin-card{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.pm-plugin-card:hover{border-color:var(--dsw-alias-border-dimmed)}
+.pm-plugin-card-head{align-items:center;gap:8px;display:flex;flex-wrap:wrap}
+.pm-plugin-card-title{min-width:0;color:var(--dsw-alias-label-primary);flex:1 1 auto;font-size:14px;font-weight:600;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-plugin-card-meta{display:flex;flex-direction:column;gap:4px;min-width:0}
+.pm-plugin-card-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pm-plugin-card-actions{display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:auto;padding-top:2px}
 .pm-row{flex-direction:column;gap:6px;padding:10px 0;display:flex}
 .pm-row + .pm-row{border-top:1px solid var(--dsw-alias-border-l2)}
 .pm-row-head{align-items:center;gap:8px;display:flex}
@@ -181,23 +189,34 @@ window.__ModuleLoader__.load({
       const showUpdate = item.source === 'user' && !(item.pending && item.desired === 'removed')
       const toggleLabel = item.desired === 'disabled' ? '启用' : '禁用'
       const togglePath = item.desired === 'disabled' ? '/enable' : '/disable'
-      return jsx('li', {
-        className: 'pm-row',
+      return jsx('div', {
+        className: 'pm-plugin-card',
         children: [
           jsx('div', {
-            className: 'pm-row-head',
+            className: 'pm-plugin-card-head',
             children: [
-              jsx('span', { className: 'pm-id', children: displayId(item) }),
+              jsx('span', { className: 'pm-plugin-card-title', title: item.name, children: displayId(item) }),
               sourceBadge(item.source),
-              item.group ? jsx('span', { className: 'pm-badge group', children: '▣ ' + item.group }) : null,
               jsx('span', { className: 'pm-st ' + ph.cls, children: ph.text }),
+            ],
+          }),
+          jsx('div', {
+            className: 'pm-plugin-card-meta',
+            children: [
+              jsx('div', { className: 'pm-mod', children: item.name }),
+              realId(item) ? jsx('div', { className: 'pm-real', children: '实际 id: ' + realId(item) }) : null,
+            ],
+          }),
+          jsx('div', {
+            className: 'pm-plugin-card-badges',
+            children: [
+              item.group ? jsx('span', { className: 'pm-badge group', children: '▣ ' + item.group }) : null,
               pendingText(item),
             ],
           }),
-          jsx('div', { className: 'pm-mod', children: item.name + (realId(item) ? ' · 实际 id: ' + realId(item) : '') }),
           item.ephemeral ? jsx('p', { className: 'pm-hint', children: item.ephemeral }) : null,
           jsx('div', {
-            className: 'pm-actions',
+            className: 'pm-plugin-card-actions',
             children: [
               canToggle
                 ? jsx('button', {
@@ -205,6 +224,14 @@ window.__ModuleLoader__.load({
                     disabled: busy !== null,
                     onClick: () => onAction(togglePath, item.id, toggleLabel),
                     children: toggleLabel,
+                  })
+                : null,
+              showUpdate
+                ? jsx('button', {
+                    className: 'pm-btn',
+                    disabled: busy !== null,
+                    onClick: () => onAction('/update', item.id, '更新'),
+                    children: '更新',
                   })
                 : null,
               showUninstall
@@ -217,14 +244,6 @@ window.__ModuleLoader__.load({
                       }
                     },
                     children: '卸载',
-                  })
-                : null,
-              showUpdate
-                ? jsx('button', {
-                    className: 'pm-btn',
-                    disabled: busy !== null,
-                    onClick: () => onAction('/update', item.id, '更新'),
-                    children: '更新',
                   })
                 : null,
               showCancelUninstall
@@ -579,8 +598,8 @@ window.__ModuleLoader__.load({
               ? null
               : filtered.length === 0
                 ? jsx('p', { className: 'pm-empty', children: searching ? '（无匹配）' : '（空）' })
-                : jsx('ul', {
-                    className: 'pm-list',
+                : jsx('div', {
+                    className: 'pm-plugin-grid',
                     children: filtered.map((item) => jsx(PluginRow, { key: item.id, item, busy, onAction })),
                   }),
           ],
@@ -793,23 +812,24 @@ window.__ModuleLoader__.load({
 
       const pluginRow = (item) => {
         const checked = !!selected[item.name]
-        return jsx('li', {
+        return jsx('div', {
           key: item.id,
-          className: 'pm-row',
+          className: 'pm-plugin-card',
           children: [
             jsx('div', {
-              className: 'pm-row-head',
+              className: 'pm-plugin-card-head',
               children: [
                 jsx('input', {
                   type: 'checkbox',
                   checked,
                   onChange: () => toggle(item.name),
                 }),
-                jsx('span', { className: 'pm-id', children: displayId(item) }),
+                jsx('span', { className: 'pm-plugin-card-title', title: item.name, children: displayId(item) }),
                 item.running.enabled ? null : jsx('span', { className: 'pm-st off', children: '已禁用' }),
                 item.group ? jsx('span', { className: 'pm-badge group', children: '▣ ' + item.group }) : null,
               ],
             }),
+            jsx('div', { className: 'pm-mod', children: item.name }),
           ],
         })
       }
@@ -855,7 +875,7 @@ window.__ModuleLoader__.load({
               jsx('p', { className: 'pm-hint', children: '勾选的插件会加入上面填写的分组；若这些插件已在其它分组，会自动移动过来（一个插件只属于一个分组）。' }),
               userItems.length === 0
                 ? jsx('p', { className: 'pm-empty', children: '（没有用户插件）' })
-                : jsx('ul', { className: 'pm-list', children: userItems.map(pluginRow) }),
+                : jsx('div', { className: 'pm-plugin-grid', children: userItems.map(pluginRow) }),
             ],
           }),
           jsxs('div', {
