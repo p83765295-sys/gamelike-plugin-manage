@@ -512,9 +512,17 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
       if (!group) throw new Error(`没有分组: ${name}`)
       if (group.plugins.length === 0) throw new Error(`分组「${name}」没有插件`)
       const users = userNames()
+      const bundleInserts = readBundleInsertMap(paths.packagePath, paths.profileDir)
+      // 旧分组可能仍存运行 entry 名（如 @deepseek-ai/dsh-skill-filesystem），
+      // 必须先反查为真实 bundle 名，否则整组启停只对部分成员生效。
+      const canonical = [...new Set(group.plugins.map((pluginName) => bundleInserts.get(pluginName) ?? pluginName))]
+      const migrated = canonical.length !== group.plugins.length || canonical.some((value, index) => value !== group.plugins[index])
+      if (migrated) {
+        upsertGroup(paths.groupsPath, { ...group, plugins: canonical })
+      }
       let found = 0
       let changed = 0
-      for (const pluginName of group.plugins) {
+      for (const pluginName of canonical) {
         if (!users.has(pluginName)) continue
         const entry = entryByGroupMember(pluginName)
         if (!entry) continue
@@ -525,6 +533,7 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
         upsertPending(paths.pendingPath, { id: entry.id, op, ts: Date.now() })
         changed++
       }
+      if (found === 0) throw new Error(`分组「${name}」没有可操作的用户插件（可能尚未装配）`)
       if (changed > 0) {
         return {
           id: name,
@@ -532,14 +541,11 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
           message: `已记录待重启操作：${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${changed} 个插件。当前运行不变，重启 DSH 后生效。`,
         }
       }
-      if (found > 0) {
-        return {
-          id: name,
-          op,
-          message: `分组「${name}」的全部 ${found} 个插件已处于目标状态，无需重启。`,
-        }
+      return {
+        id: name,
+        op,
+        message: `分组「${name}」的全部 ${found} 个插件已处于目标状态，无需重启。`,
       }
-      throw new Error(`分组「${name}」没有可操作的用户插件（可能尚未装配）`)
     },
 
     async exportPack(packName: string, groupNames: string[]): Promise<ExportPackResult> {
