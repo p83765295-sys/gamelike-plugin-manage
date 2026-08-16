@@ -43,7 +43,8 @@ window.__ModuleLoader__.load({
 .pm-search{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);min-height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;font-size:13px;line-height:1.5}
 .pm-search:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}
 .pm-group{margin:0;padding:0}
-.pm-group-head{appearance:none;font:inherit;cursor:pointer;border:0;background:0 0;width:100%;display:flex;align-items:center;gap:8px;padding:8px 0;color:var(--dsw-alias-label-primary);text-align:left}
+.pm-group-head-row{display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap}
+.pm-group-head{appearance:none;font:inherit;cursor:pointer;border:0;background:0 0;flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;padding:8px 0;color:var(--dsw-alias-label-primary);text-align:left}
 .pm-group-head:hover .pm-group-title{color:var(--dsw-alias-brand-primary)}
 .pm-caret{display:inline-block;width:12px;color:var(--dsw-alias-label-tertiary);font-size:12px}
 .pm-group-title{font-size:13px;font-weight:600;line-height:1.5}
@@ -565,7 +566,7 @@ window.__ModuleLoader__.load({
       const items = (data && data.items) || []
       const groups = (data && data.groups) || []
       const nativeAll = items.filter((i) => i.source === 'native')
-      const userAll = items.filter((i) => i.source !== 'native') // user + injected 归入「用户」组
+      const userAll = items.filter((i) => i.source !== 'native' && !i.group) // 未分组 user + injected
       const pendingCount = items.filter((i) => i.pending).length
 
       const q = search.trim().toLowerCase()
@@ -579,19 +580,25 @@ window.__ModuleLoader__.load({
       const userItems = userAll.filter((i) => match(i) && matchGroup(i))
       const searching = q.length > 0
 
-      const group = (key, title, all, filtered) => {
+      const group = (key, title, all, filtered, extra) => {
         const isCollapsed = collapsed[key]
         const count = searching ? `匹配 ${filtered.length} / 共 ${all.length}` : `${all.length} 个`
         return jsxs('div', {
           className: 'pm-group',
           children: [
-            jsx('button', {
-              className: 'pm-group-head',
-              onClick: () => setCollapsed((c) => ({ ...c, [key]: !c[key] })),
+            jsx('div', {
+              className: 'pm-group-head-row',
               children: [
-                jsx('span', { className: 'pm-caret', children: isCollapsed ? '▸' : '▾' }),
-                jsx('span', { className: 'pm-group-title', children: title }),
-                jsx('span', { className: 'pm-group-count', children: count }),
+                jsx('button', {
+                  className: 'pm-group-head',
+                  onClick: () => setCollapsed((c) => ({ ...c, [key]: !c[key] })),
+                  children: [
+                    jsx('span', { className: 'pm-caret', children: isCollapsed ? '▸' : '▾' }),
+                    jsx('span', { className: 'pm-group-title', children: title }),
+                    jsx('span', { className: 'pm-group-count', children: count }),
+                  ],
+                }),
+                extra || null,
               ],
             }),
             isCollapsed
@@ -613,7 +620,7 @@ window.__ModuleLoader__.load({
               jsx('button', {
                 className: 'pm-group-chip' + (groupFilter === '' ? ' on' : ''),
                 onClick: () => setGroupFilter(''),
-                children: '全部分组',
+                children: '全部',
               }),
               jsx('button', {
                 className: 'pm-group-chip' + (groupFilter === '__none' ? ' on' : ''),
@@ -622,31 +629,37 @@ window.__ModuleLoader__.load({
               }),
             ].concat(
               groups.map((g) =>
-                jsxs('span', {
+                jsx('button', {
                   key: g.name,
                   className: 'pm-group-chip' + (groupFilter === g.name ? ' on' : ''),
-                  children: [
-                    jsx('span', {
-                      onClick: () => setGroupFilter(g.name === groupFilter ? '' : g.name),
-                      style: { cursor: 'pointer' },
-                      children: '▣ ' + g.name + ' · ' + g.plugins.length,
-                    }),
-                    jsx('button', {
-                      onClick: () => onGroupApply(g.name, 'enable'),
-                      title: '整组启用（写待重启队列）',
-                      children: '启用',
-                    }),
-                    jsx('button', {
-                      onClick: () => onGroupApply(g.name, 'disable'),
-                      title: '整组禁用（写待重启队列）',
-                      children: '禁用',
-                    }),
-                  ],
+                  onClick: () => setGroupFilter(g.name === groupFilter ? '' : g.name),
+                  children: '▣ ' + g.name + ' · ' + g.plugins.length,
                 }),
               ),
             ),
           })
         : null
+
+      const groupSectionExtra = (g) => {
+        return jsxs('div', {
+          className: 'pm-actions',
+          children: [
+            jsx('span', { className: 'pm-badge group', children: g.desired === 'enabled' ? '整组启用' : g.desired === 'disabled' ? '整组禁用' : '保持现状' }),
+            jsx('button', {
+              className: 'pm-btn',
+              disabled: busy !== null,
+              onClick: () => onGroupApply(g.name, 'enable'),
+              children: '整组启用',
+            }),
+            jsx('button', {
+              className: 'pm-btn',
+              disabled: busy !== null,
+              onClick: () => onGroupApply(g.name, 'disable'),
+              children: '整组禁用',
+            }),
+          ],
+        })
+      }
 
       return jsxs('div', {
         children: [
@@ -658,7 +671,8 @@ window.__ModuleLoader__.load({
             className: 'pm-badges',
             children: [
               jsx('span', { className: 'pm-badge native', children: '原生 ' + nativeAll.length }),
-              jsx('span', { className: 'pm-badge user', children: '用户 ' + userAll.length }),
+              jsx('span', { className: 'pm-badge user', children: '未分组 ' + userAll.length }),
+              groups.map((g) => jsx('span', { key: g.name, className: 'pm-badge group', children: '▣ ' + g.name + ' ' + g.plugins.length })),
               pendingCount > 0 ? jsx('span', { className: 'pm-badge warn', children: '待重启 ' + pendingCount }) : null,
             ],
           }),
@@ -676,8 +690,14 @@ window.__ModuleLoader__.load({
             : jsxs('div', {
                 children: [
                   group('native', '原生', nativeAll, nativeItems),
-                  group('user', '用户', userAll, userItems),
-                ],
+                  group('user', '用户（未分组）', userAll, userItems),
+                ].concat(
+                  groups.map((g) => {
+                    const all = items.filter((i) => i.group === g.name)
+                    const filtered = all.filter((i) => match(i) && matchGroup(i))
+                    return group(g.name, '▣ ' + g.name, all, filtered, groupSectionExtra(g))
+                  }),
+                ),
               }),
           jsx('p', { className: 'pm-hint', children: data ? '配置位置：' + data.patchPath + ' · 刷新间隔 15s' : '' }),
         ],
