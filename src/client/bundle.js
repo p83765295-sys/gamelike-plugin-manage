@@ -239,9 +239,6 @@ window.__ModuleLoader__.load({
       'packages.create.hint': '勾选的插件会加入上面填写的分组；插件可以同时属于多个分组，导出插件包时交集只内嵌一份。',
       'packages.create.saved': '已保存分组「{name}」（{count} 个插件；多归属，交集在导出时自动去重）',
       'packages.create.saveFailed': '保存分组失败',
-      'packages.desired.asIs': '保持现状 as-is',
-      'packages.desired.enabled': '整组启用 enabled',
-      'packages.desired.disabled': '整组禁用 disabled',
       'packages.list.title': '② 已有分组',
       'packages.list.removeOk': '已从分组「{group}」移除 {plugin}',
       'packages.list.removeFailed': '移除失败',
@@ -367,9 +364,6 @@ window.__ModuleLoader__.load({
       'packages.create.hint': 'Selected plugins join the group above; plugins may belong to multiple groups, and export deduplicates intersections into one copy.',
       'packages.create.saved': 'Group "{name}" saved ({count} plugins; multi-membership, intersections deduplicated on export)',
       'packages.create.saveFailed': 'Failed to save group',
-      'packages.desired.asIs': 'as-is',
-      'packages.desired.enabled': 'group enabled',
-      'packages.desired.disabled': 'group disabled',
       'packages.list.title': '② Existing groups',
       'packages.list.removeOk': 'Removed {plugin} from group "{group}"',
       'packages.list.removeFailed': 'Failed to remove',
@@ -948,7 +942,6 @@ window.__ModuleLoader__.load({
         return jsxs('div', {
           className: 'pm-actions',
           children: [
-            jsx('span', { className: 'pm-badge muted', children: t(g.desired === 'enabled' ? 'manage.desired.enabled' : g.desired === 'disabled' ? 'manage.desired.disabled' : 'manage.asIs') }),
             jsx('button', {
               type: 'button',
               className: 'pm-btn',
@@ -1007,7 +1000,6 @@ window.__ModuleLoader__.load({
 
     function PackagesTab({ t, data, onRefresh }) {
       const [groupName, setGroupName] = useState('')
-      const [desired, setDesired] = useState('as-is')
       const [selected, setSelected] = useState({})
       const [packName, setPackName] = useState('my-dsh-pack')
       const [pluginSearch, setPluginSearch] = useState('')
@@ -1044,7 +1036,7 @@ window.__ModuleLoader__.load({
           return
         }
         setBusy('save')
-        postJson('/groups/upsert', { name, desired, plugins })
+        postJson('/groups/upsert', { name, desired: 'as-is', plugins })
           .then((r) => {
             if (!r || r.ok === false) {
               setMsg({ text: (r && r.error) || t('packages.create.saveFailed'), isErr: true })
@@ -1202,17 +1194,6 @@ window.__ModuleLoader__.load({
                     placeholder: t('packages.create.groupNamePlaceholder'),
                     value: groupName,
                     onChange: (e) => setGroupName(e.target.value),
-                  }),
-                  jsx('select', {
-                    className: 'pm-input',
-                    style: { maxWidth: 180 },
-                    value: desired,
-                    onChange: (e) => setDesired(e.target.value),
-                    children: [
-                      jsx('option', { value: 'as-is', children: t('packages.desired.asIs') }),
-                      jsx('option', { value: 'enabled', children: t('packages.desired.enabled') }),
-                      jsx('option', { value: 'disabled', children: t('packages.desired.disabled') }),
-                    ],
                   }),
                   jsx('button', {
                     type: 'button',
