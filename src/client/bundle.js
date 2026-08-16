@@ -495,7 +495,7 @@ window.__ModuleLoader__.load({
                   jsxs('div', {
                     className: 'pm-pc-badges',
                     children: [
-                      (item.groups || []).map((g) => jsx('span', { key: g, className: 'pm-badge', children: '▣ ' + g })),
+                      (item.groups || []).map((g) => jsx('span', { key: g, className: 'pm-badge', children: g })),
                       item.version ? jsx('span', { className: 'pm-badge muted', children: 'v' + item.version }) : null,
                     ],
                   }),
@@ -931,7 +931,7 @@ window.__ModuleLoader__.load({
                   key: g.name,
                   className: 'pm-group-chip' + (groupFilter === g.name ? ' on' : ''),
                   onClick: () => setGroupFilter(g.name === groupFilter ? '' : g.name),
-                  children: '▣ ' + g.name + ' · ' + g.plugins.length,
+                  children: g.name + ' · ' + g.plugins.length,
                 }),
               ),
             ),
@@ -989,7 +989,7 @@ window.__ModuleLoader__.load({
                     groups.map((g) => {
                       const all = items.filter((i) => groupsOf(i).includes(g.name))
                       const filtered = all.filter((i) => match(i) && matchGroup(i))
-                      return group(g.name, '▣ ' + g.name, all, filtered, groupSectionExtra(g))
+                      return group(g.name, g.name, all, filtered, groupSectionExtra(g))
                     }),
                   ),
                 }),
@@ -1165,7 +1165,7 @@ window.__ModuleLoader__.load({
                   children: [
                     item.running.enabled ? null : jsx('span', { className: 'pm-st off', children: t('state.disabled') }),
                     (item.groups || []).slice(0, 2).map((g) =>
-                      jsx('span', { key: g, className: 'pm-badge pm-badge-item', children: jsx('span', { className: 'pm-badge-text', title: g, children: '▣ ' + g }) }),
+                      jsx('span', { key: g, className: 'pm-badge pm-badge-item', children: jsx('span', { className: 'pm-badge-text', title: g, children: g }) }),
                     ),
                     item.groups && item.groups.length > 2
                       ? jsx('span', { className: 'pm-badge', children: '▣ +' + (item.groups.length - 2) })
@@ -1234,7 +1234,7 @@ window.__ModuleLoader__.load({
                         jsxs('div', {
                           className: 'pm-row-head',
                           children: [
-                            jsx('span', { className: 'pm-id', children: '▣ ' + g.name }),
+                            jsx('span', { className: 'pm-id', children: g.name }),
                             jsx('span', { className: 'pm-badge muted', children: t(g.desired === 'enabled' ? 'manage.desired.enabled' : g.desired === 'disabled' ? 'manage.desired.disabled' : 'manage.asIs') }),
                             jsx('span', { className: 'pm-st pending', children: t('packages.list.count', { count: g.plugins.length }) }),
                           ],
@@ -1348,7 +1348,7 @@ window.__ModuleLoader__.load({
                                         [g.name]: s[g.name] === false,
                                       })),
                                   }),
-                                  jsx('span', { className: 'pm-export-name', title: g.name, children: '▣ ' + g.name }),
+                                  jsx('span', { className: 'pm-export-name', title: g.name, children: g.name }),
                                   jsx('span', { className: 'pm-hint', children: t('packages.list.count', { count: g.plugins.length }) }),
                                 ],
                               }),
