@@ -808,13 +808,29 @@ window.__ModuleLoader__.load({
               jsx('p', { className: 'pm-card-desc', children: t('install.tgz.desc') }),
               jsx('div', {
                 className: 'pm-drop' + (dragging ? ' on' : ''),
-                onDragOver: (e) => {
+                onDragEnter: (e) => {
+                  // 宿主（dsh-client-ui-conversation）在 document 上监听 dragenter/dragover/drop，
+                  // 用于全屏图片拖放遮罩。这里必须 stopPropagation，否则拖 .tgz 时
+                  // 会先触发宿主的「图片拖动到此处即可添加」遮罩，并把文件送进图片通道，
+                  // 导致 M2 拖拽压缩包安装失效。
                   e.preventDefault()
+                  e.stopPropagation()
                   setDragging(true)
                 },
-                onDragLeave: () => setDragging(false),
+                onDragOver: (e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+                  setDragging(true)
+                },
+                onDragLeave: (e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setDragging(false)
+                },
                 onDrop: (e) => {
                   e.preventDefault()
+                  e.stopPropagation()
                   setDragging(false)
                   uploadFile(e.dataTransfer.files && e.dataTransfer.files[0])
                 },
