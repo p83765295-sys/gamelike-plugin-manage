@@ -51,10 +51,14 @@ src/
 
 管理操作（禁用/启用/卸载）**不立即写 profile**，只写 `~/.dsh/plugin-manage.pending.json`；重启后 `applyPending()` 才真正写 `cordis.patch.yml` / `package.json`。好处：重启前可随时取消，配置从未被动过。
 
+- 只对**真正需要变更**的插件写 pending：已处于目标状态的插件直接返回「无需重启」，避免产生会被 `prunePending` 立即清掉的无效记录。
+- 「重启 DSH」按钮只在存在真实 pending 时出现。
+
 ### 2. 插件包 = 引用集合，导入 = 约束求解
 
 - 身份 = `(name, version, sha256)`，不是单纯的包名。
 - 导出 `.tgz` 是容器（内嵌插件副本，离线可装）；导入时先吸收进 PluginStore 成为实体，再走 `buildInstallPlan` 交集裁决。
+- 导出 UI 支持折叠选择要导出的现有分组（默认全选，至少保留一个）。
 - 裁决表见 README「交集裁决规则」。
 
 ### 3. 包级事务
