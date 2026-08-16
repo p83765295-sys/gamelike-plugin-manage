@@ -9,7 +9,7 @@ DSH 插件管理器：入口位于 **设置 → 插件管理**。提供插件树
 | 管理插件 | 查看运行中的全部插件；原生 / 用户 / 临时注入分类；禁用、启用、卸载（卸载仅用户插件，重启后生效） |
 | 插件安装 | 本地目录、拖拽 `.tgz`、GitHub 地址或 npm 指令；安装队列 + 进度；失败任务可「交给 AI 配置」 |
 | 开发插件 | 占位，后续开放 |
-| 插件包 | 将已安装的用户插件（无论启用/禁用）加入分组，导出为 `.tgz` 插件包；安装插件包后自动恢复分组 |
+| 插件包 | 将已安装的用户插件（无论启用/禁用）加入分组，导出为 `.tgz` 插件包（可折叠选择要导出的现有分组）；安装插件包后自动恢复分组 |
 
 ### 分组
 
@@ -60,46 +60,9 @@ DSH 插件管理器：入口位于 **设置 → 插件管理**。提供插件树
 | patch 顶层存在 disabled 覆盖（旧卸载意图） | 显式重新安装时清除覆盖，按包内版本装配 |
 | 包内同 name 重复出现 | 只吸收一次（导出端已 seen 去重） |
 
-## 开发
+## 开发与 API
 
-要求：Node.js 20+、npm；并已安装 DSH（构建时通过 `DSH_CHECKOUT` 或全局 npm 安装位置探测依赖）。
-
-```bash
-npm install --include=dev
-npm run build            # 链接 DSH 依赖 + 编译 src → lib
-npm run build:client     # 复制浏览器端 bundle → lib/client.js
-npm run typecheck        # 类型检查
-```
-
-在 DSH 中热重载：
-
-```bash
-dev_reload_package gamelike-plugin-manage
-```
-
-持久装配：
-
-```bash
-dev_install_package <repo-dir>
-```
-
-## HTTP API
-
-所有接口位于 `/plugin-manage/api`：
-
-| 方法/路径 | 说明 |
-|---|---|
-| `GET /list` | 运行树、待重启队列、分组完整快照 |
-| `POST /disable` `/enable` `/uninstall` `/cancel-uninstall` | 写待重启队列（`{id}`） |
-| `POST /update` | 更新用户插件（`{id}`） |
-| `POST /delegate-ai` | 失败任务交给 AI 配置（`{taskId}`） |
-| `GET /install-tasks` | 安装/更新队列快照 |
-| `POST /install-local` | 本地目录安装 |
-| `POST /install-tgz` | `.tgz` 上传安装 |
-| `POST /install-source` | GitHub / npm 安装 |
-| `GET /groups` | 分组列表 |
-| `POST /groups/upsert` `POST /groups/delete` `POST /groups/apply` | 分组管理 |
-| `GET /export-pack` | 导出插件包（浏览器下载） |
+构建、架构说明、模块职责与 HTTP API 清单见 [DEVELOPER.md](./DEVELOPER.md)。
 
 ## 安全策略
 
@@ -107,12 +70,6 @@ dev_install_package <repo-dir>
 - 依赖安装使用 `npm install --ignore-scripts`（不执行生命周期脚本）。
 - 默认拒绝执行构建脚本；仅当用户勾选「允许执行构建脚本」后才运行 `npm rebuild` / `npm run build`。
 - `git clone` 使用 `--depth 1`，失败自动清理残留。
-
-## 插件开发兼容性
-
-- Windows / macOS / Linux / WSL 均可构建与运行（构建脚本为跨平台 Node 脚本）。
-- Windows 原生环境下，安装/更新会使用 `npm.cmd` / `npx.cmd` 等可执行扩展名。
-- 仅当插件自带 `scripts/build.sh` 且无 `npm run build` 时，原生 Windows 无法自动构建，需要先在本地构建好再安装。
 
 ## License
 
