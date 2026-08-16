@@ -63,7 +63,7 @@ window.__ModuleLoader__.load({
 .pm-pc-chevron.open{transform:rotate(180deg)}
 .pm-pc-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:10px 0 14px;display:flex;flex-direction:column;gap:10px}
 .pm-pc-meta{display:flex;flex-direction:column;gap:4px;min-width:0}
-.pm-pc-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pm-pc-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:0 1 auto;min-width:0;max-width:100%}
 .pm-pc-footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding-top:12px;display:flex;flex-wrap:wrap}
 .pm-mod{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .pm-real{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -838,7 +838,7 @@ window.__ModuleLoader__.load({
 
     function ManageTab({ t, data, busy, onAction, onGroupApply }) {
       const [search, setSearch] = useState('')
-      const [collapsed, setCollapsed] = useState({ native: true, user: false })
+      const [collapsed, setCollapsed] = useState({})
       const [groupFilter, setGroupFilter] = useState('')
       const items = (data && data.items) || []
       const groups = (data && data.groups) || []
@@ -859,7 +859,8 @@ window.__ModuleLoader__.load({
       const searching = q.length > 0
 
       const group = (key, title, all, filtered, extra) => {
-        const isCollapsed = collapsed[key]
+        // 默认全部折叠：只有用户显式展开（记录 false）才展开
+        const isCollapsed = collapsed[key] !== false
         const count = searching ? t('manage.matchCount', { matched: filtered.length, total: all.length }) : t('manage.itemCount', { count: all.length })
         return jsxs('div', {
           className: 'pm-group',
@@ -1124,6 +1125,7 @@ window.__ModuleLoader__.load({
               children: [
                 jsx('input', {
                   type: 'checkbox',
+                  style: { flex: 'none' },
                   checked,
                   onChange: () => toggle(item.name),
                 }),
@@ -1134,11 +1136,18 @@ window.__ModuleLoader__.load({
                     jsx('span', { className: 'pm-pc-desc', children: item.name }),
                   ],
                 }),
-                item.running.enabled ? null : jsx('span', { className: 'pm-st off', children: t('state.disabled') }),
-                (item.groups || []).slice(0, 2).map((g) => jsx('span', { key: g, className: 'pm-badge', children: '▣ ' + g })),
-                item.groups && item.groups.length > 2
-                  ? jsx('span', { className: 'pm-badge', children: '▣ +' + (item.groups.length - 2) })
-                  : null,
+                jsxs('span', {
+                  className: 'pm-pc-badges',
+                  children: [
+                    item.running.enabled ? null : jsx('span', { className: 'pm-st off', children: t('state.disabled') }),
+                    (item.groups || []).slice(0, 2).map((g) =>
+                      jsx('span', { key: g, className: 'pm-badge pm-badge-item', children: jsx('span', { className: 'pm-badge-text', title: g, children: '▣ ' + g }) }),
+                    ),
+                    item.groups && item.groups.length > 2
+                      ? jsx('span', { className: 'pm-badge', children: '▣ +' + (item.groups.length - 2) })
+                      : null,
+                  ],
+                }),
               ],
             }),
           ],
