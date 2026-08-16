@@ -77,6 +77,25 @@ export function registerGateway(ctx: Context, svc: PluginManageService, log?: Lo
           if (req.method === 'GET' && path === '/list') {
             return send(res, 200, { ok: true, ...svc.list() })
           }
+          if (req.method === 'GET' && path === '/icon') {
+            const url = new URL(req.url ?? '/', 'http://localhost')
+            const name = (url.searchParams.get('name') || '').trim()
+            const icon = name ? svc.icon(name) : null
+            if (!icon || !existsSync(icon.file)) {
+              return send(res, 404, { ok: false, error: 'icon not found' })
+            }
+            res.writeHead(200, {
+              'content-type': icon.mime,
+              'content-length': String(icon.size),
+              'cache-control': 'private, max-age=300',
+            })
+            const stream = createReadStream(icon.file)
+            stream.on('error', () => {
+              try { res.destroy() } catch { /* ignore */ }
+            })
+            stream.pipe(res)
+            return
+          }
           if (req.method === 'GET' && path === '/install-tasks') {
             return send(res, 200, { ok: true, tasks: svc.listTasks() })
           }

@@ -60,6 +60,7 @@ window.__ModuleLoader__.load({
 .pm-pc-head{appearance:none;box-sizing:border-box;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}
 .pm-pc-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .pm-pc-headtext{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
+.pm-pc-icon{width:24px;height:24px;border-radius:6px;object-fit:cover;flex:none;background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l2)}
 .pm-pc-name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pm-pc-desc{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .pm-pc-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s;display:inline-flex}
@@ -398,6 +399,19 @@ window.__ModuleLoader__.load({
       return base.replace(/^dsh-/, '').replace(/^cordis-plugin-/, '') || String(name)
     }
 
+    /** 插件图标：由 /plugin-manage/api/icon 提供；404 或加载失败自动隐藏 */
+    function PluginIcon({ src }) {
+      const [failed, setFailed] = useState(false)
+      if (!src || failed) return null
+      return jsx('img', {
+        className: 'pm-pc-icon',
+        src,
+        alt: '',
+        loading: 'lazy',
+        onError: () => setFailed(true),
+      })
+    }
+
     function displayId(item) {
       const id = item.id.startsWith('include:') ? item.id.slice('include:'.length) : item.id
       const isHash = /^[0-9a-f]{6,10}$/.test(id)
@@ -468,6 +482,7 @@ window.__ModuleLoader__.load({
             'aria-label': t(open ? 'collapse' : 'expand', { title }),
             onClick: () => setOpen(!open),
             children: [
+              jsx(PluginIcon, { src: item.iconUrl }),
               jsxs('span', {
                 className: 'pm-pc-headtext',
                 children: [
@@ -1145,6 +1160,7 @@ window.__ModuleLoader__.load({
                   checked,
                   onChange: () => toggle(item.name),
                 }),
+                jsx(PluginIcon, { src: item.iconUrl }),
                 jsxs('span', {
                   className: 'pm-pc-headtext',
                   children: [
