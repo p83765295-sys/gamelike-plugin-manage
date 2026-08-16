@@ -1235,7 +1235,6 @@ window.__ModuleLoader__.load({
                           className: 'pm-row-head',
                           children: [
                             jsx('span', { className: 'pm-id', children: g.name }),
-                            jsx('span', { className: 'pm-badge muted', children: t(g.desired === 'enabled' ? 'manage.desired.enabled' : g.desired === 'disabled' ? 'manage.desired.disabled' : 'manage.asIs') }),
                             jsx('span', { className: 'pm-st pending', children: t('packages.list.count', { count: g.plugins.length }) }),
                           ],
                         }),
