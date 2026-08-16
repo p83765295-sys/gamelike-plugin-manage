@@ -32,6 +32,28 @@ function send(res: ServerResponse, code: number, body: unknown): void {
 }
 
 /**
+ * 进程控制请求只接受 loopback 直连 + Origin 与 Host 一致的请求。
+ * 设计对齐 dsh-market 的公开安全模型（其实现为 MIT 许可）；
+ * 本实现为独立重写。
+ */
+function trustedLocalRestartRequest(req: IncomingMessage): boolean {
+  const address = req.socket.remoteAddress
+  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
+  if (req.headers.forwarded !== undefined || req.headers['x-forwarded-for'] !== undefined || req.headers['x-real-ip'] !== undefined) {
+    return false
+  }
+  const origin = req.headers.origin
+  const host = req.headers.host
+  if (origin === undefined || host === undefined) return false
+  try {
+    const parsed = new URL(origin)
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
+  } catch {
+    return false
+  }
+}
+
+/**
  * 注册 client→host HTTP API（webServer prefix 路由）。
  * webServer 不可用时静默跳过——持久化读写主路径不依赖 GUI。
  */
@@ -76,6 +98,12 @@ export function registerGateway(ctx: Context, svc: PluginManageService, log?: Lo
             .replace(/\/+$/, '') || '/'
           if (req.method === 'GET' && path === '/list') {
             return send(res, 200, { ok: true, ...svc.list() })
+          }
+          if (req.method === 'POST' && path === '/restart') {
+            if (!trustedLocalRestartRequest(req)) {
+              return send(res, 403, { ok: false, error: 'untrusted restart request' })
+            }
+            return send(res, 200, { ok: true, result: svc.restart() })
           }
           if (req.method === 'GET' && path === '/install-tasks') {
             return send(res, 200, { ok: true, tasks: svc.listTasks() })

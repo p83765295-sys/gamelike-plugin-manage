@@ -60,6 +60,8 @@ export interface PluginManageSnapshot {
   items: PluginItem[]
   pending: PendingChange[]
   groups: PluginGroup[]
+  /** 是否允许插件触发 DSH 自重启（config.allowRestart） */
+  restartAllowed: boolean
 }
 
 /** 导出的插件包 manifest 里的一组 */

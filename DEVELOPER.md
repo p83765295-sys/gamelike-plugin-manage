@@ -73,6 +73,13 @@ src/
 - 一个插件可属于多个分组（tag）。
 - 安装插件包恢复分组时，若同一插件在不同组声明不同 desired，**禁用优先**（安全向）。
 
+### 6. DSH 自重启（src/restart.ts）
+
+- 独立重写实现；行为设计参考 dsh-market（MIT License，Copyright (c) 2026 fkysly and dsh-market contributors）。
+- 精确重放启动命令（bin/dsh/源码入口）、detached helper 延迟 1.5s 拉起新进程、Windows 用 PowerShell `-WindowStyle Hidden` 包装。
+- `config.allowRestart`（默认 true）为 false 时禁用，supervisor 托管部署应显式关闭。
+- HTTP 仅接受 loopback 直连 + Origin/Host 一致 + 无转发头；安装任务运行中拒绝。
+
 ## HTTP API
 
 所有接口位于 `/plugin-manage/api`。
@@ -90,6 +97,7 @@ src/
 | `GET /groups` | 分组列表 |
 | `POST /groups/upsert` `POST /groups/delete` `POST /groups/apply` | 分组管理 |
 | `GET /export-pack` | 导出插件包（浏览器下载） |
+| `POST /restart` | 调度 DSH 自重启（仅 loopback 同源；安装任务运行中拒绝） |
 
 ## 客户端（browser half）
 

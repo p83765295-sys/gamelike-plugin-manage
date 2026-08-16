@@ -177,6 +177,7 @@ window.__ModuleLoader__.load({
       'action.saveGroup': '保存分组',
       'action.saving': '保存中…',
       'action.delegateAi': '交给 AI 配置',
+      'action.restart': '重启 DSH',
       'action.delegated': '已交给 AI…',
       'action.retry': '重试',
       'confirm.uninstall': '确定卸载「{name}」？配置会在重启 DSH 后生效。',
@@ -227,6 +228,9 @@ window.__ModuleLoader__.load({
       'install.requestFailed': '请求失败: {error}',
       'install.delegateFailed': '交给 AI 配置失败',
       'install.delegatedOk': '已交给 AI 配置',
+      'restart.failed': '重启请求失败',
+      'restart.scheduled': '已调度 DSH 自重启',
+      'confirm.restart': '确定重启 DSH 以应用待重启变更？',
       'install.saved': '已写入配置，重启 DSH 后生效',
       'develop.title': '开发插件',
       'develop.desc': '生成插件骨架、构建、注入调试 —— 暂未开放。',
@@ -302,6 +306,7 @@ window.__ModuleLoader__.load({
       'action.saveGroup': 'Save group',
       'action.saving': 'Saving…',
       'action.delegateAi': 'Hand to AI',
+      'action.restart': 'Restart DSH',
       'action.delegated': 'Handed to AI…',
       'action.retry': 'Retry',
       'confirm.uninstall': 'Uninstall "{name}"? The change takes effect after DSH restarts.',
@@ -352,6 +357,9 @@ window.__ModuleLoader__.load({
       'install.requestFailed': 'Request failed: {error}',
       'install.delegateFailed': 'Handing to AI failed',
       'install.delegatedOk': 'Handed to AI',
+      'restart.failed': 'Restart request failed',
+      'restart.scheduled': 'DSH restart scheduled',
+      'confirm.restart': 'Restart DSH to apply pending changes?',
       'install.saved': 'Saved to profile config; applies after DSH restarts',
       'develop.title': 'Develop plugins',
       'develop.desc': 'Scaffolding, building and injection debugging — not open yet.',
@@ -846,7 +854,7 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function ManageTab({ t, data, busy, onAction, onGroupApply }) {
+    function ManageTab({ t, data, busy, onAction, onGroupApply, onRestart }) {
       const [search, setSearch] = useState('')
       const [collapsed, setCollapsed] = useState({})
       const [groupFilter, setGroupFilter] = useState('')
@@ -965,9 +973,20 @@ window.__ModuleLoader__.load({
         children: [
           jsx('p', { className: 'pm-intro', children: t('manage.intro') }),
           pendingCount > 0
-            ? jsx('div', {
+            ? jsxs('div', {
                 className: 'pm-badges',
-                children: jsx('span', { className: 'pm-st pending', children: t('pending.count', { count: pendingCount }) }),
+                children: [
+                  jsx('span', { className: 'pm-st pending', children: t('pending.count', { count: pendingCount }) }),
+                  data.restartAllowed
+                    ? jsx('button', {
+                        type: 'button',
+                        className: 'pm-btn pm-btn-primary',
+                        disabled: busy !== null,
+                        onClick: onRestart,
+                        children: t('action.restart'),
+                      })
+                    : null,
+                ],
               })
             : null,
           jsx('input', {
@@ -1443,6 +1462,27 @@ window.__ModuleLoader__.load({
           .finally(() => setBusy(null))
       }
 
+      const onRestart = () => {
+        if (!window.confirm(t('confirm.restart'))) return
+        setBusy('restart')
+        setMsg(null)
+        fetchJson('/restart', { method: 'POST' })
+          .then((r) => {
+            if (!r || r.ok === false) {
+              setMsg({ text: (r && r.error) || t('restart.failed'), isErr: true })
+              setBusy(null)
+              return
+            }
+            const result = r.result || {}
+            setMsg({ text: result.message || t('restart.scheduled'), isErr: false })
+            // 0.5s 后当前进程退出，页面即将断开；不重置 busy 以免误触
+          })
+          .catch((err) => {
+            setMsg({ text: t('install.requestFailed', { error: err }), isErr: true })
+            setBusy(null)
+          })
+      }
+
       return jsxs('div', {
         className: 'pm-sec',
         children: [
@@ -1469,7 +1509,7 @@ window.__ModuleLoader__.load({
               }),
             ),
           }),
-          tab === 'manage' ? jsx(ManageTab, { t, data, busy, onAction, onGroupApply }) : null,
+          tab === 'manage' ? jsx(ManageTab, { t, data, busy, onAction, onGroupApply, onRestart }) : null,
           tab === 'download' ? jsx(InstallTab, { t, onRefresh: refresh, onDelegateAi, delegateBusy: busy }) : null,
           tab === 'develop' ? jsx(Placeholder, { t, title: t('develop.title'), desc: t('develop.desc') }) : null,
           tab === 'packages' ? jsx(PackagesTab, { t, data, onRefresh: refresh }) : null,

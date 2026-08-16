@@ -7,11 +7,14 @@ export interface Config {
   profile: string
   /** DSH_HOME；空 = 自动探测 */
   home: string
+  /** 是否允许插件触发 DSH 自重启（supervisor 托管部署应设为 false） */
+  allowRestart: boolean
 }
 
 export const Config = z.object({
   profile: z.string().default('web'),
   home: z.string().default(''),
+  allowRestart: z.boolean().default(true),
 })
 
 /** 解析后的持久层路径（profile 的 package.json / cordis.patch.yml / pending 记录） */

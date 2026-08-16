@@ -38,7 +38,7 @@ export function apply(ctx: AppContext, config: ConfigType): void {
     }
   }
 
-  const svc = createService(ctx, paths)
+  const svc = createService(ctx, paths, { allowRestart: config.allowRestart !== false })
   ctx.provide('pluginManage', svc)
   registerGateway(ctx, svc, { warn: (msg) => log(msg) })
 

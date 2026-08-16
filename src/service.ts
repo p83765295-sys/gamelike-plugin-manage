@@ -7,6 +7,7 @@ import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { ResolvedPaths } from './config.js'
+import { scheduleRestart } from './restart.js'
 import {
   activatePrepared,
   cleanupExport,
@@ -76,6 +77,8 @@ export interface PluginManageService {
   exportPack(packName: string, groupNames: string[]): Promise<ExportPackResult>
   /** M2/M1 失败任务「交给 AI 配置」：落一份结构化请求文件供 AI 会话读取 */
   delegateAi(taskId: number): Promise<{ method: 'file'; path: string; message: string }>
+  /** 调度 DSH 自重启（supervisor 托管时可经 config 禁用） */
+  restart(): { pid: number; logOut: string; logErr: string; message: string }
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -132,7 +135,12 @@ function resolveBundleName(name: string, id: string, bundles: ProfileBundle[], b
   return bundleInserts.get(name) ?? bundleInserts.get(patchId) ?? bundleInserts.get(id) ?? name
 }
 
-export function createService(ctx: Context, paths: ResolvedPaths): PluginManageService {
+export interface ServiceOptions {
+  /** config.allowRestart：false 时拒绝自重启（supervisor 托管部署） */
+  allowRestart: boolean
+}
+
+export function createService(ctx: Context, paths: ResolvedPaths, options: ServiceOptions = { allowRestart: true }): PluginManageService {
   const loader: Loader = ctx.loader
   const queue = new InstallQueue()
 
@@ -210,6 +218,7 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
       items,
       pending,
       groups,
+      restartAllowed: options.allowRestart,
     }
   }
 
@@ -327,6 +336,21 @@ export function createService(ctx: Context, paths: ResolvedPaths): PluginManageS
 
   return {
     list,
+
+    restart: () => {
+      if (!options.allowRestart) {
+        throw new Error('此部署已禁用插件自重启（config.allowRestart = false），请由 supervisor 重启 DSH')
+      }
+      const active = queue.snapshot().some((task) => task.status === 'queued' || task.status === 'running')
+      if (active) {
+        throw new Error('有安装/更新任务正在运行，请等待完成后再重启 DSH')
+      }
+      const scheduled = scheduleRestart()
+      return {
+        ...scheduled,
+        message: `已调度 DSH 自重启（0.5s 后退出当前进程，1.5s 后拉起新进程）。重启日志：${scheduled.logOut} / ${scheduled.logErr}`,
+      }
+    },
 
     async disable(id: string): Promise<ActionOk> {
       const { source } = requireRunning(id)
