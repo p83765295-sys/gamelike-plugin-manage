@@ -31,7 +31,7 @@ dev_install_package <repo-dir>
 
 ```
 src/
-├── index.ts        host 入口：inject loader/webServer/timer，2 秒后应用 pending
+├── index.ts        host 入口：inject loader/webServer/timer，2 秒后应用卸载 pending
 ├── config.ts       Config schema + 持久层路径解析
 ├── gateway.ts      HTTP API（/plugin-manage/api/*）
 ├── service.ts      PluginManageService：运行树投影 + 变更编排 + 安装队列
@@ -47,12 +47,13 @@ src/
 
 ## 核心设计
 
-### 1. M1 的 pending 两阶段
+### 1. M1 的热启用/禁用 + 卸载 pending 两阶段
 
-管理操作（禁用/启用/卸载）**不立即写 profile**，只写 `~/.dsh/plugin-manage.pending.json`；重启后 `applyPending()` 才真正写 `cordis.patch.yml` / `package.json`。好处：重启前可随时取消，配置从未被动过。
-
-- 只对**真正需要变更**的插件写 pending：已处于目标状态的插件直接返回「无需重启」，避免产生会被 `prunePending` 立即清掉的无效记录。
-- 「重启 DSH」按钮只在存在真实 pending 时出现。
+- 禁用/启用**立即写** `cordis.patch.yml`，由 DSH 的 `watchUserPatches` 热应用，loader 树即时生效。
+- 卸载仍写 `~/.dsh/plugin-manage.pending.json`；重启后 `applyPending()` 才真正改 `package.json` / patch。好处：卸载在重启前可随时取消。
+- 热禁用会同步清理该插件拥有的本地 Agent 预设（仅归属标记路径）。
+- 只对真正需要变更的插件写 patch：已处于目标状态直接返回，避免无意义 reload。
+- 「重启 DSH」按钮只在存在卸载/更新 pending 时出现。
 
 ### 2. 插件包 = 引用集合，导入 = 约束求解
 
@@ -91,7 +92,8 @@ src/
 | 方法/路径 | 说明 |
 |---|---|
 | `GET /list` | 运行树、待重启队列、分组完整快照 |
-| `POST /disable` `/enable` `/uninstall` `/cancel-uninstall` | 写待重启队列（`{id}`） |
+| `POST /disable` `/enable` | 写 cordis.patch.yml 并热应用，立即生效（`{id}`） |
+| `POST /uninstall` `/cancel-uninstall` | 写待重启队列（`{id}`） |
 | `POST /update` | 更新用户插件（`{id}`） |
 | `POST /delegate-ai` | 失败任务交给 AI 配置（`{taskId}`） |
 | `GET /install-tasks` | 安装/更新队列快照 |

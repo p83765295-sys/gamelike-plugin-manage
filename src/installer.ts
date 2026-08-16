@@ -112,6 +112,7 @@ export function toLinuxPath(input: string): string {
 function readPkg(dir: string): {
   name: string
   main?: string
+  exports?: string | Record<string, unknown>
   scripts?: Record<string, string>
   devDependencies?: Record<string, string>
   bundlePatch?: string
@@ -123,6 +124,7 @@ function readPkg(dir: string): {
   const pkg = JSON.parse(readFileSync(path, 'utf8')) as {
     name?: unknown
     main?: unknown
+    exports?: unknown
     scripts?: Record<string, string>
     devDependencies?: Record<string, string>
     dsh?: { bundle?: { patch?: unknown }; client?: unknown }
@@ -130,14 +132,51 @@ function readPkg(dir: string): {
   const name = typeof pkg.name === 'string' ? pkg.name.trim() : ''
   if (!name) throw new Error(`package.json 缺少 name: ${path}`)
   const patch = pkg.dsh?.bundle?.patch
+  const pkgExports = typeof pkg.exports === 'string' || (pkg.exports && typeof pkg.exports === 'object')
+    ? (pkg.exports as string | Record<string, unknown>)
+    : undefined
   return {
     name,
     main: typeof pkg.main === 'string' ? pkg.main : undefined,
+    exports: pkgExports,
     scripts: pkg.scripts,
     devDependencies: pkg.devDependencies,
     bundlePatch: typeof patch === 'string' ? patch : undefined,
     isDshPackage: !!(pkg.dsh && (pkg.dsh.bundle || pkg.dsh.client)),
   }
+}
+
+/**
+ * 解析插件宿主入口文件（相对 dir 的第一个真实存在的 JS 入口）：
+ *   main → exports（"." 的 default/import/require/node 条件）→ lib/index.js / dist/index.js 兜底。
+ * 兼容两种构建产物目录：老插件编译到 lib/，官方 tsdown 式插件编译到 dist/ 且用 exports 声明入口（无 main）。
+ */
+function resolveEntryFile(dir: string): string | undefined {
+  const pkg = readPkg(dir)
+  const candidates: string[] = []
+  const push = (spec: unknown): void => {
+    if (typeof spec === 'string' && spec) candidates.push(spec)
+  }
+  push(pkg.main)
+  push(pkg.exports)
+  const root = pkg.exports && typeof pkg.exports === 'object' ? pkg.exports['.'] : undefined
+  if (typeof root === 'string') {
+    push(root)
+  } else if (root && typeof root === 'object') {
+    for (const key of ['default', 'import', 'require', 'node']) push((root as Record<string, unknown>)[key])
+  } else if (pkg.exports && typeof pkg.exports === 'object') {
+    // 旧式条件 exports：{ "import": ..., "require": ... } 顶层直接声明（无 "." 键）
+    for (const key of ['default', 'import', 'require', 'node']) push(pkg.exports[key])
+  }
+  // 兜底：exports 缺失/条件不命中时，按约定目录找标准入口
+  candidates.push('lib/index.js', 'dist/index.js')
+  for (const spec of candidates) {
+    try {
+      const full = resolve(dir, spec)
+      if (existsSync(full) && lstatSync(full).isFile()) return full
+    } catch { /* 非法路径 → 跳过 */ }
+  }
+  return undefined
 }
 
 function isInstalled(paths: ResolvedPaths, name: string): boolean {
@@ -205,15 +244,15 @@ function ensureDependencies(dir: string, opts: InstallOptions, step: StepFn): vo
   }
 }
 
-/** lib 缺失时按授权决定是否构建；默认拒绝（构建 = 执行第三方代码） */
+/** 入口缺失时按授权决定是否构建；默认拒绝（构建 = 执行第三方代码） */
 function ensureBuilt(dir: string, opts: InstallOptions, step: StepFn): void {
-  if (existsSync(join(dir, 'lib'))) {
+  if (resolveEntryFile(dir)) {
     opts.onProgress?.(70)
     return
   }
   if (!opts.allowBuild) {
     throw new Error(
-      '该包尚未构建（缺少 lib/）。自动构建会在本机执行 npm install 与构建脚本，存在代码执行风险；' +
+      '该包尚未构建（缺少入口文件，lib/ 或 dist/）。自动构建会在本机执行 npm install 与构建脚本，存在代码执行风险；' +
       '信任该来源的话请勾选「允许执行构建脚本」后重试，或先在本地构建好再安装。',
     )
   }
@@ -225,12 +264,12 @@ function ensureBuilt(dir: string, opts: InstallOptions, step: StepFn): void {
     } else if (existsSync(join(dir, 'scripts', 'build.sh'))) {
       run('bash', ['scripts/build.sh'], dir, 300_000)
     } else {
-      throw new Error('目录缺少 lib/，且没有 build 脚本（npm run build / scripts/build.sh），请本地构建后重试')
+      throw new Error('目录缺少入口文件（lib/ 或 dist/），且没有 build 脚本（npm run build / scripts/build.sh），请本地构建后重试')
     }
   } catch (error) {
     throw new Error(`自动构建失败（可本地构建后重试）: ${messageOf(error)}`)
   }
-  if (!existsSync(join(dir, 'lib'))) throw new Error('构建完成但仍未生成 lib/，请检查构建脚本')
+  if (!resolveEntryFile(dir)) throw new Error('构建完成但仍未生成入口文件（lib/ 或 dist/），请检查构建脚本')
   opts.onProgress?.(70)
 }
 
@@ -584,7 +623,7 @@ async function preparePackFromStage(paths: ResolvedPaths, root: string, opts: In
         if (installed) {
           notes.push({ text: `${name}: 已安装版本 ${installed.version || '未知'}，包内版本 ${absorbed.version}——将进入装配计划裁决（不静默覆盖）。`, level: 'warn' })
         } else {
-          // 缺 lib 时按授权构建（与单插件安装同一安全策略）；失败只跳过该成员
+          // 缺入口文件（lib/ 或 dist/）时按授权构建（与单插件安装同一安全策略）；失败只跳过该成员
           prepareDir(absorbed.dir, opts, step)
         }
         candidates.push({ name, dir: absorbed.dir, version: absorbed.version, sha256: absorbed.sha256, existed: absorbed.existed })
@@ -859,8 +898,8 @@ export async function activatePrepared(
       writePatchDisabled(paths.patchPath, pkg.name, false)
     }
 
-    const entryFile = resolve(dir, pkg.main || 'lib/index.js')
-    if (!existsSync(entryFile)) throw new Error(`找不到插件入口: ${entryFile}（package.json main 或 lib/index.js）`)
+    const entryFile = resolveEntryFile(dir)
+    if (!entryFile) throw new Error(`找不到插件入口: ${dir}（package.json main / exports / lib/index.js / dist/index.js）`)
     opts.onProgress?.(88)
     step(`检查插件入口: ${pkg.name}`)
     let hasApply = false
@@ -893,8 +932,8 @@ export async function activatePrepared(
     if (!hasApply && (prepared.kind === 'suite' || prepared.kind === 'pack')) {
       try { rmSync(join(paths.profileDir, 'node_modules', ...pkg.name.split('/')), { recursive: true, force: true }) } catch {}
       try { removeBundle(paths.packagePath, pkg.name) } catch {}
-      step(`跳过非插件目录（main 未导出 apply）: ${pkg.name}`, 'warn')
-      results.push({ name: pkg.name, entryId: '', dir, message: `跳过「${pkg.name}」：不是 DSH 插件入口（main 未导出 apply）` })
+      step(`跳过非插件目录（入口未导出 apply）: ${pkg.name}`, 'warn')
+      results.push({ name: pkg.name, entryId: '', dir, message: `跳过「${pkg.name}」：不是 DSH 插件入口（入口未导出 apply）` })
       continue
     }
 

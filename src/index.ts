@@ -3,9 +3,8 @@
  *
  * M1 管理插件：列出 loader 树全部插件（官方 / 用户 / 临时注入），
  * 原生插件只允许禁用/启用，用户插件允许禁用/启用/卸载。
- * 操作先只写 pending 记录，当前进程完全不动；重启后本插件 apply 时
- * 再把 pending 真正写入 cordis.patch.yml / package.json（原生禁用重启后不恢复）。
- * 因此卸载在重启前可随时取消（pending 一删，配置从未被动过）。
+ * 禁用/启用直接写 cordis.patch.yml，由 DSH watcher 热应用立即生效；
+ * 卸载仍写 pending，重启后真正落盘，重启前可取消。
  * M2 插件安装 / M3 开发插件占位 / M4 插件包：
  * 分组多归属；插件包 v2 以 (name, version, sha256) 为身份，
  * 导入时校验哈希 → 吸收进 PluginStore → InstallPlan 交集裁决 → 包级事务装配。

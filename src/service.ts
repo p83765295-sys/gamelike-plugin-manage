@@ -1,6 +1,7 @@
 /**
  * 插件管理服务：只读运行树 + 读/写 profile 持久层 + M2 安装队列。
- * 所有变更操作只写配置文件与 pending 记录，当前进程的 loader 树保持不动。
+ * 禁用/启用直接写 cordis.patch.yml 并热应用（DSH watcher 实时生效）；
+ * 卸载仍走 pending 两阶段，重启前可取消。
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -404,35 +405,31 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
     },
 
     async disable(id: string): Promise<ActionOk> {
-      const { name, source, enabled } = requireRunning(id)
+      const { name, source, enabled, patchId } = requireRunning(id)
       if (!enabled) {
-        return { id, op: 'disable', message: `「${id}」当前已处于禁用状态，无需重启。` }
+        return { id, op: 'disable', message: `「${id}」当前已处于禁用状态。` }
       }
+      writePatchDisabled(paths.patchPath, patchId, true)
       const presetIds = await presetIdsForEntry(id, name)
-      const pending = upsertPending(paths.pendingPath, {
-        id,
-        op: 'disable',
-        ts: Date.now(),
-        ...(presetIds.length > 0 ? { presetIds } : {}),
-      })
-      const presetNote = presetIds.length > 0 ? `；重启后还会删除 ${presetIds.length} 个该插件拥有的本地 Agent 预设` : ''
+      await removePresetsByIds(presetIds)
+      const presetNote = presetIds.length > 0 ? `；已清理 ${presetIds.length} 个该插件拥有的本地 Agent 预设` : ''
       return {
         id,
         op: 'disable',
-        message: `已记录待重启操作：禁用「${id}」（来源: ${source}）。当前运行不变，重启 DSH 后生效；再次重启前可随时取消。待重启项共 ${pending.length} 条。${presetNote}`,
+        message: `已热禁用「${id}」（来源: ${source}）：patch 已写入并热应用，立即生效。${presetNote}`,
       }
     },
 
     async enable(id: string): Promise<ActionOk> {
-      const { source, enabled } = requireRunning(id)
+      const { source, enabled, patchId } = requireRunning(id)
       if (enabled) {
-        return { id, op: 'enable', message: `「${id}」当前已处于启用状态，无需重启。` }
+        return { id, op: 'enable', message: `「${id}」当前已处于启用状态。` }
       }
-      const pending = upsertPending(paths.pendingPath, { id, op: 'enable', ts: Date.now() })
+      writePatchDisabled(paths.patchPath, patchId, false)
       return {
         id,
         op: 'enable',
-        message: `已记录待重启操作：启用「${id}」（来源: ${source}）。当前运行不变，重启 DSH 后生效。待重启项共 ${pending.length} 条。`,
+        message: `已热启用「${id}」（来源: ${source}）：patch 已写入并热应用，立即生效。`,
       }
     },
 
@@ -589,37 +586,37 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
       let found = 0
       let changed = 0
       let presetTotal = 0
+      const presetIdsAll: string[] = []
       for (const pluginName of canonical) {
         if (!users.has(pluginName)) continue
         const entry = entryByGroupMember(pluginName)
         if (!entry) continue
         found++
         const enabled = !entry.disabled
-        // 已处于目标状态的插件不写 pending，避免 UI 出现"看似需要重启"的误导
+        // 已处于目标状态的插件不写 patch，避免无意义 reload
         if (op === 'disable' ? !enabled : enabled) continue
-        const presetIds = op === 'disable' ? await presetIdsForBundle(pluginName) : []
-        presetTotal += presetIds.length
-        upsertPending(paths.pendingPath, {
-          id: entry.id,
-          op,
-          ts: Date.now(),
-          ...(presetIds.length > 0 ? { presetIds } : {}),
-        })
+        writePatchDisabled(paths.patchPath, patchIdOf(entry.id), op === 'disable')
+        if (op === 'disable') {
+          const presetIds = await presetIdsForBundle(pluginName)
+          presetTotal += presetIds.length
+          presetIdsAll.push(...presetIds)
+        }
         changed++
       }
       if (found === 0) throw new Error(`分组「${name}」没有可操作的用户插件（可能尚未装配）`)
       if (changed > 0) {
-        const presetNote = presetTotal > 0 ? `；重启后还会删除 ${presetTotal} 个相关本地 Agent 预设` : ''
+        await removePresetsByIds(presetIdsAll)
+        const presetNote = presetTotal > 0 ? `；已清理 ${presetTotal} 个相关本地 Agent 预设` : ''
         return {
           id: name,
           op,
-          message: `已记录待重启操作：${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${changed} 个插件。当前运行不变，重启 DSH 后生效。${presetNote}`,
+          message: `已热${op === 'enable' ? '启用' : '禁用'}分组「${name}」的 ${changed} 个插件：patch 已写入并热应用，立即生效。${presetNote}`,
         }
       }
       return {
         id: name,
         op,
-        message: `分组「${name}」的全部 ${found} 个插件已处于目标状态，无需重启。`,
+        message: `分组「${name}」的全部 ${found} 个插件已处于目标状态。`,
       }
     },
 
