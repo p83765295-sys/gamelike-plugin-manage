@@ -399,7 +399,7 @@ export function createService(ctx: Context, paths: ResolvedPaths, options: Servi
       const scheduled = scheduleRestart()
       return {
         ...scheduled,
-        message: `已调度 DSH 自重启（0.5s 后退出当前进程，1.5s 后拉起新进程）。重启日志：${scheduled.logOut} / ${scheduled.logErr}`,
+        message: `已调度 DSH 自重启（0.5s 后退出当前进程，3s 后拉起新进程）。重启日志：${scheduled.logOut} / ${scheduled.logErr}`,
       }
     },
 

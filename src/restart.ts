@@ -6,8 +6,8 @@
  * 未复制其代码，仅采纳其公开验证过的行为设计：
  *   - 精确重放启动本进程的 DSH 命令（含 execArgv / argv / cwd）
  *   - 用 detached 的 Node 小助手延迟拉起新进程，等旧进程释放端口
- *   - Windows 下通过 PowerShell -WindowStyle Hidden 包装，避免
- *     detached 进程无 console 导致后续子进程弹出可见窗口
+ *   - Windows 用 windowsHide 直接启动，不再经 PowerShell 拼命令
+ *     （避免引号/执行策略差异导致只关不启）
  *   - supervisor（systemd/pm2/launchd）托管场景由 allowRestart=false 关闭
  */
 import { spawn } from 'node:child_process'
@@ -26,12 +26,14 @@ export interface RespawnInvocation {
   args: string[]
   viaShell: boolean
   detached: boolean
+  /** Windows：隐藏子进程控制台窗口（Node spawn 自带，等价 -WindowStyle Hidden） */
+  windowsHide: boolean
 }
 
 /** 探测启动本 DSH 进程的入口与参数。 */
 export function restartLaunch(): RestartLaunch {
   const entry = process.argv[1]
-  if (entry !== undefined && /[\\/](?:bin\.(?:js|ts)|dsh)$/.test(entry)) {
+  if (entry !== undefined && /[\\/](?:bin\.(?:js|ts)|dsh(?:\.(?:js|mjs|cjs))?)$/.test(entry)) {
     // 源码 / bin 入口：必须用绝对路径，避免子进程按自己的 cwd 解析失败。
     const abs = resolve(entry)
     return {
@@ -50,23 +52,17 @@ export function restartLaunch(): RestartLaunch {
   }
 }
 
-/** 平台正确的拉起方式：POSIX 用 detached；Windows 用隐藏窗口的 PowerShell。 */
+/** 平台正确的拉起方式：POSIX 用 detached；Windows 用 windowsHide 直接启动。 */
 export function respawnInvocation(launch: RestartLaunch, platform: NodeJS.Platform = process.platform): RespawnInvocation {
   if (platform !== 'win32') {
-    return { file: launch.file, args: launch.args, viaShell: launch.viaShell, detached: true }
+    return { file: launch.file, args: launch.args, viaShell: launch.viaShell, detached: true, windowsHide: false }
   }
-  const quote = (part: string): string => `'${part.replace(/'/g, "''")}'`
   return {
-    file: 'powershell.exe',
-    args: [
-      '-NoProfile',
-      '-WindowStyle',
-      'Hidden',
-      '-Command',
-      [`& ${quote(launch.file)}`, ...launch.args.map(quote)].join(' '),
-    ],
-    viaShell: false,
+    file: launch.file,
+    args: launch.args,
+    viaShell: launch.viaShell,
     detached: false,
+    windowsHide: true,
   }
 }
 
@@ -78,8 +74,9 @@ export interface ScheduledRestart {
 }
 
 /**
- * 调度自重启：detached helper 延迟 1.5s 拉起新 DSH，当前进程 0.5s 后退出。
- * helper 的 stdout/stderr 写入 tmpdir 下的日志文件，便于排查重启失败。
+ * 调度自重启：detached helper 延迟 3s 拉起新 DSH，当前进程 0.5s 后退出。
+ * 旧进程 SIGTERM 后留 2.5s 释放端口；helper 的 stdout/stderr 写入 tmpdir
+ * 下的日志文件，便于排查重启失败。
  */
 export function scheduleRestart(): ScheduledRestart {
   const launch = restartLaunch()
@@ -95,19 +92,23 @@ export function scheduleRestart(): ScheduledRestart {
     `const cwd = ${JSON.stringify(launch.cwd ?? process.cwd())}`,
     `const viaShell = ${JSON.stringify(spawned.viaShell)}`,
     `const detached = ${JSON.stringify(spawned.detached)}`,
+    `const windowsHide = ${JSON.stringify(spawned.windowsHide)}`,
     `const logOut = ${JSON.stringify(logOut)}`,
     `const logErr = ${JSON.stringify(logErr)}`,
     'setTimeout(() => {',
     '  try {',
     '    const out = fs.openSync(logOut, "a")',
     '    const err = fs.openSync(logErr, "a")',
-    '    const child = spawn(file, args, { cwd, detached, stdio: ["ignore", out, err], env: process.env, shell: viaShell })',
+    '    const child = spawn(file, args, { cwd, detached, windowsHide, stdio: ["ignore", out, err], env: process.env, shell: viaShell })',
     '    child.unref()',
-    '  } catch {}',
-    '}, 1500)',
+    '  } catch (error) {',
+    '    try { fs.appendFileSync(logErr, String(error) + "\\n") } catch {}',
+    '  }',
+    '}, 3000)',
   ].join('\n')
   const helper = spawn(process.execPath, ['-e', helperCode], {
     detached: true,
+    windowsHide: process.platform === 'win32',
     stdio: 'ignore',
     env: process.env,
   })
